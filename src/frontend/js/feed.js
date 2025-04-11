@@ -10,6 +10,8 @@ const FeedManager = {
     hasMoreArticles: true,
     currentFeedId: null,
     unreadOnly: false,
+    readTrackingObserver: null,
+    autoReadEnabled: true,
     
     // DOM Elements
     articlesContainer: null,
@@ -18,6 +20,7 @@ const FeedManager = {
     loadMoreContainer: null,
     feedFilterSelect: null,
     unreadFilterCheckbox: null,
+    autoReadSetting: null,
     
     /**
      * Initialize the feed manager
@@ -30,14 +33,44 @@ const FeedManager = {
         this.loadMoreContainer = document.getElementById('load-more-container');
         this.feedFilterSelect = document.getElementById('feed-filter');
         this.unreadFilterCheckbox = document.getElementById('unread-filter');
+        this.autoReadSetting = document.getElementById('auto-read-setting');
+        
+        // Load auto-read preference from localStorage
+        const savedAutoReadPref = localStorage.getItem('autoReadEnabled');
+        if (savedAutoReadPref !== null) {
+            this.autoReadEnabled = savedAutoReadPref === 'true';
+            if (this.autoReadSetting) {
+                this.autoReadSetting.checked = this.autoReadEnabled;
+            }
+        }
         
         // Add event listeners
         this.loadMoreButton.addEventListener('click', () => this.loadMoreArticles());
         this.feedFilterSelect.addEventListener('change', () => this.handleFilterChange());
         this.unreadFilterCheckbox.addEventListener('change', () => this.handleFilterChange());
         
+        // Add auto-read setting event listener if the element exists
+        if (this.autoReadSetting) {
+            this.autoReadSetting.addEventListener('change', () => {
+                this.autoReadEnabled = this.autoReadSetting.checked;
+                localStorage.setItem('autoReadEnabled', this.autoReadEnabled);
+                
+                if (this.autoReadEnabled) {
+                    this.setupAutoReadTracking();
+                } else if (this.readTrackingObserver) {
+                    this.readTrackingObserver.disconnect();
+                    this.readTrackingObserver = null;
+                }
+            });
+        }
+        
         // Set up intersection observer for lazy loading
         this.setupLazyLoading();
+        
+        // Set up auto-read tracking if enabled
+        if (this.autoReadEnabled) {
+            this.setupAutoReadTracking();
+        }
         
         // Load feeds for the filter dropdown
         this.loadFeedsForFilter();
@@ -61,6 +94,41 @@ const FeedManager = {
             }, { threshold: 0.5 });
             
             observer.observe(this.loadMoreContainer);
+        }
+    },
+    
+    /**
+     * Set up intersection observer to mark articles as read when scrolled past
+     */
+    setupAutoReadTracking() {
+        // Only set up if the Intersection Observer API is available
+        if ('IntersectionObserver' in window) {
+            // Disconnect existing observer if it exists
+            if (this.readTrackingObserver) {
+                this.readTrackingObserver.disconnect();
+            }
+            
+            // Create an observer that triggers when articles leave the viewport
+            this.readTrackingObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    // If article is no longer intersecting (scrolled past) and was previously visible
+                    if (!entry.isIntersecting && entry.boundingClientRect.y < 0) {
+                        const articleElement = entry.target;
+                        const articleId = parseInt(articleElement.dataset.id);
+                        const isRead = articleElement.dataset.read === 'true';
+                        
+                        // Only mark as read if it's not already read
+                        if (!isRead) {
+                            this.toggleArticleReadStatus(articleId);
+                        }
+                    }
+                });
+            }, { threshold: 0 }); // Trigger as soon as article leaves viewport
+            
+            // Observe all current article elements
+            document.querySelectorAll('.article-card').forEach(article => {
+                this.readTrackingObserver.observe(article);
+            });
         }
     },
     
@@ -234,6 +302,11 @@ const FeedManager = {
         
         // Add to container
         this.articlesContainer.appendChild(articleElement);
+        
+        // Add to read tracking observer if it exists and auto-read is enabled
+        if (this.readTrackingObserver && this.autoReadEnabled) {
+            this.readTrackingObserver.observe(articleElement);
+        }
     },
     
     /**
