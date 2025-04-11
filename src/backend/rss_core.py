@@ -4,6 +4,7 @@ import time
 import logging
 import datetime
 import hashlib
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from contextlib import closing
 
@@ -13,6 +14,105 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('rss_backend')
+
+
+def extract_published_date(entry) -> Optional[float]:
+    """
+    Extract publication date from feed entry with fallbacks for different formats.
+    Returns timestamp as float or None if no valid date found.
+    """
+    # First try the parsed date fields that feedparser provides
+    for date_field in ['published_parsed', 'updated_parsed', 'created_parsed', 'modified_parsed']:
+        if hasattr(entry, date_field) and getattr(entry, date_field):
+            return time.mktime(getattr(entry, date_field))
+    
+    # If no parsed fields, try the string date fields
+    try:
+        from dateutil import parser as date_parser
+        
+        for date_field in ['published', 'updated', 'created', 'modified', 'date']:
+            if hasattr(entry, date_field) and getattr(entry, date_field):
+                date_str = getattr(entry, date_field)
+                parsed_date = date_parser.parse(date_str)
+                return time.mktime(parsed_date.timetuple())
+    except (ImportError, ValueError, AttributeError) as e:
+        logging.debug(f"Error parsing date string: {e}")
+    
+    return None
+
+
+def extract_content(entry) -> str:
+    """
+    Extract content from feed entry with fallbacks for different formats.
+    """
+    # Try all possible content locations
+    if hasattr(entry, 'content') and entry.content:
+        # Atom feeds often have content as a list of dict objects
+        if isinstance(entry.content, list) and len(entry.content) > 0:
+            content_item = entry.content[0]
+            if isinstance(content_item, dict) and 'value' in content_item:
+                return content_item['value']
+            elif hasattr(content_item, 'value'):
+                return content_item.value
+    
+    # RSS feeds often have content in content:encoded
+    if hasattr(entry, 'content_encoded') and entry.content_encoded:
+        return entry.content_encoded
+    
+    # Fallback to summary/description
+    if hasattr(entry, 'summary') and entry.summary:
+        return entry.summary
+    
+    if hasattr(entry, 'description') and entry.description:
+        return entry.description
+    
+    return ''
+
+
+def generate_guid(entry) -> str:
+    """
+    Generate a consistent GUID for an entry that lacks one.
+    """
+    # Try to use the entry's id first
+    if hasattr(entry, 'id') and entry.id:
+        return entry.id
+    
+    # Next try the link
+    if hasattr(entry, 'link') and entry.link:
+        return entry.link
+    
+    # Get title using attribute access
+    title = ""
+    if hasattr(entry, 'title'):
+        title = entry.title
+    elif hasattr(entry, 'get'):
+        title = entry.get('title', '')
+        
+    # Get content for hashing
+    content = extract_content(entry)
+    date_str = extract_published_date(entry) or ''
+    
+    # Fallback to hash of content
+    hash_input = f"{title}{date_str}{content}"
+    return hashlib.md5(hash_input.encode()).hexdigest()
+
+
+def clean_html(html_content: str) -> str:
+    """
+    Basic HTML cleaning to handle common issues in feed content.
+    """
+    if not html_content:
+        return ''
+    
+    # Process CDATA sections iteratively to handle nesting
+    while '<![CDATA[' in html_content and ']]>' in html_content:
+        html_content = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', html_content, flags=re.DOTALL)
+    
+    # Strip potentially dangerous scripts
+    html_content = re.sub(r'<script.*?>.*?</script>', '', html_content, flags=re.DOTALL)
+    
+    return html_content.strip()
+
 
 class RSSBackend:
     def __init__(self, db_path: str = "rss_aggregator.db"):
@@ -159,37 +259,65 @@ class RSSBackend:
                 )
                 conn.commit()
             
-            # Parse the feed
-            feed_data = feedparser.parse(feed_url)
+            # Parse the feed with extended options
+            feed_data = feedparser.parse(feed_url, sanitize_html=True)
+            
+            # Check for feed level errors
+            if hasattr(feed_data, 'bozo') and feed_data.bozo and hasattr(feed_data, 'bozo_exception'):
+                logger.warning(f"Warning when parsing {feed_url}: {feed_data.bozo_exception}")
+            
             new_article_count = 0
             
+            # Get feed title for updating if needed
+            if hasattr(feed_data, 'feed') and hasattr(feed_data.feed, 'title'):
+                with closing(self.get_db_connection()) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute('UPDATE feeds SET title = ? WHERE id = ?', 
+                                (feed_data.feed.title, feed_id))
+                    conn.commit()
+            
             for entry in feed_data.entries:
-                # Create a unique ID for this article if it doesn't have one
-                guid = entry.get('id', None) or entry.get('link', None)
-                if not guid:
-                    # Create a hash of the title and published date as a fallback GUID
-                    guid = hashlib.md5(f"{entry.get('title', '')}{entry.get('published', '')}".encode()).hexdigest()
+                # Extract GUID or generate one
+                guid = generate_guid(entry)
                 
-                # Parse the published date
-                published_at = None
-                if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                    published_at = time.mktime(entry.published_parsed)
+                # Extract publication date
+                published_at = extract_published_date(entry)
                 
-                # Extract the content
-                content = ''
-                if hasattr(entry, 'content'):
-                    content = entry.content[0].value
-                elif hasattr(entry, 'summary'):
-                    content = entry.summary
+                # If no date is found, use current time
+                if published_at is None:
+                    published_at = datetime.datetime.now().timestamp()
+                
+                # Extract title with fallback
+                title = entry.get('title', 'No title')
+                
+                # Extract link with fallback
+                link = entry.get('link', '')
+                
+                # Extract content with rich fallback mechanism
+                content = extract_content(entry)
+                content = clean_html(content)
+                
+                # Extract summary (may be different from content)
+                summary = ''
+                if hasattr(entry, 'summary'):
+                    summary = clean_html(entry.summary)
+                elif content:
+                    # Use a truncated version of content if no summary
+                    summary = content[:500] + ('...' if len(content) > 500 else '')
+                
+                # Extract author with fallbacks
+                author = entry.get('author', '')
+                if not author and hasattr(entry, 'authors') and entry.authors:
+                    author = entry.authors[0].name if hasattr(entry.authors[0], 'name') else ''
                 
                 article = {
                     'feed_id': feed_id,
                     'guid': guid,
-                    'title': entry.get('title', 'No title'),
-                    'url': entry.get('link', ''),
-                    'description': entry.get('summary', ''),
+                    'title': title,
+                    'url': link,
+                    'description': summary,
                     'content': content,
-                    'author': entry.get('author', ''),
+                    'author': author,
                     'published_at': published_at
                 }
                 
@@ -314,6 +442,13 @@ class RSSBackend:
         try:
             with closing(self.get_db_connection()) as conn:
                 cursor = conn.cursor()
+                
+                # First check if the article exists
+                cursor.execute('SELECT id FROM articles WHERE id = ?', (article_id,))
+                if cursor.fetchone() is None:
+                    logger.warning(f"Attempted to record feedback for non-existent article ID: {article_id}")
+                    return False
+                    
                 cursor.execute(
                     'INSERT INTO user_feedback (article_id, feedback) VALUES (?, ?)',
                     (article_id, 1 if positive else -1)
@@ -322,8 +457,8 @@ class RSSBackend:
                 return True
         except Exception as e:
             logger.error(f"Error recording feedback for article {article_id}: {str(e)}")
-            return False
-    
+            return False    
+
     def remove_feed(self, feed_id: int, delete_articles: bool = True) -> bool:
         """Remove a feed and optionally its articles."""
         try:
