@@ -251,24 +251,35 @@ class RSSBackend:
                 cursor.execute('ALTER TABLE articles ADD COLUMN image_url TEXT')
                 logging.info("Added image_url column to articles table")
             
-            # Create indices for performance
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_feed_id ON articles (feed_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles (published_at)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_read ON articles (read)')
-            
-            # Create user_feedback table for future AI ranking
+            # Create user_feedback table for AI ranking
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 article_id INTEGER NOT NULL,
                 feedback INTEGER NOT NULL, -- 1 for positive, -1 for negative
+                clicked BOOLEAN DEFAULT 0, -- Track if the article link was clicked
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (article_id) REFERENCES articles (id)
             )
             ''')
             
-            conn.commit()
-    
+            # Check if we need to add the clicked column to an existing user_feedback table
+            try:
+                cursor.execute('SELECT clicked FROM user_feedback LIMIT 1')
+            except sqlite3.OperationalError:
+                # Column doesn't exist, add it
+                cursor.execute('ALTER TABLE user_feedback ADD COLUMN clicked BOOLEAN DEFAULT 0')
+                logging.info("Added clicked column to user_feedback table")
+            
+            # Create indices for performance
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_feed_id ON articles (feed_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles (published_at)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_read ON articles (read)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_article_id ON user_feedback (article_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_article_clicked ON user_feedback (article_id, clicked)')
+            
+            conn.commit()    
+
     def add_feed(self, url: str) -> Tuple[bool, str]:
         """
         Add a new RSS feed to the database.
@@ -613,6 +624,80 @@ class RSSBackend:
             stats['new_articles_24h'] = cursor.fetchone()[0]
             
             return stats
+
+    def record_click(self, article_id: int) -> bool:
+        """Record when a user clicks on an article link."""
+        try:
+            with closing(self.get_db_connection()) as conn:
+                cursor = conn.cursor()
+                
+                # First check if the article exists
+                cursor.execute('SELECT id FROM articles WHERE id = ?', (article_id,))
+                if cursor.fetchone() is None:
+                    logger.warning(f"Attempted to record click for non-existent article ID: {article_id}")
+                    return False
+                    
+                # Insert a new feedback record with clicked=1 if not exists, or update existing
+                cursor.execute('''
+                    INSERT INTO user_feedback (article_id, feedback, clicked) 
+                    VALUES (?, 0, 1)
+                    ON CONFLICT (article_id) WHERE clicked = 0
+                    DO UPDATE SET clicked = 1, timestamp = CURRENT_TIMESTAMP
+                ''')
+                
+                # If the above fails due to SQLite version not supporting ON CONFLICT,
+                # fall back to a more compatible approach
+                if cursor.rowcount <= 0:
+                    # First see if there's an existing record to update
+                    cursor.execute(
+                        'SELECT id FROM user_feedback WHERE article_id = ? AND clicked = 0 LIMIT 1',
+                        (article_id,)
+                    )
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        # Update existing record
+                        cursor.execute(
+                            'UPDATE user_feedback SET clicked = 1, timestamp = CURRENT_TIMESTAMP WHERE id = ?',
+                            (existing[0],)
+                        )
+                    else:
+                        # Insert new record
+                        cursor.execute(
+                            'INSERT INTO user_feedback (article_id, feedback, clicked) VALUES (?, 0, 1)',
+                            (article_id,)
+                        )
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error recording click for article {article_id}: {str(e)}")
+            return False
+
+    def get_article_interactions(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get articles with their interaction statistics for AI training."""
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    a.id, a.title, a.description, a.published_at,
+                    a.read,
+                    COUNT(DISTINCT CASE WHEN uf.feedback = 1 THEN uf.id END) AS positive_count,
+                    COUNT(DISTINCT CASE WHEN uf.feedback = -1 THEN uf.id END) AS negative_count,
+                    COUNT(DISTINCT CASE WHEN uf.clicked = 1 THEN uf.id END) AS click_count
+                FROM 
+                    articles a
+                LEFT JOIN 
+                    user_feedback uf ON a.id = uf.article_id
+                GROUP BY 
+                    a.id
+                ORDER BY 
+                    a.published_at DESC
+                LIMIT ?
+            ''', (limit,))
+            
+            interactions = [dict(row) for row in cursor.fetchall()]
+            return interactions
 
 
 # Example usage

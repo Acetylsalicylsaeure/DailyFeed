@@ -137,5 +137,16 @@ const API = {
         return this.request('/refresh', {
             method: 'POST'
         });
+    },
+
+    /**
+     * Record a click on an article
+     * @param {number} articleId - Article ID
+     * @returns {Promise<Object>} - Response data
+     */
+    async recordClick(articleId) {
+        return this.request(`/articles/${articleId}/click`, {
+            method: 'POST'
+        });
     }
 };

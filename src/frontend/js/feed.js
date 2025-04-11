@@ -302,6 +302,44 @@ const FeedManager = {
             e.preventDefault();
             this.recordArticleFeedback(article.id, false, dislikeButton, articleElement.querySelector('.feedback-button.like'));
         });
+        
+        // Track article link clicks
+        this.setupLinkClickTracking(articleElement, article);
+    },
+    
+    /**
+     * Set up article link click tracking
+     * @param {Element} articleElement - Article DOM element
+     * @param {Object} article - Article data
+     */
+    setupLinkClickTracking(articleElement, article) {
+        const titleLink = articleElement.querySelector('.article-title a');
+        if (titleLink) {
+            titleLink.addEventListener('click', (e) => {
+                // Don't prevent default - we want the link to work normally
+                // Just track the click in the background
+                this.trackArticleClick(article.id, titleLink);
+            });
+        }
+    },
+    
+    /**
+     * Track article link click
+     * @param {number} articleId - Article ID
+     * @param {Element} linkElement - The link element that was clicked
+     */
+    async trackArticleClick(articleId, linkElement) {
+        try {
+            // Record the click event in the background
+            // We don't want to delay the user's navigation, so we don't await this
+            API.recordClick(articleId)
+                .catch(error => console.error('Error recording click:', error));
+            
+            // We don't return anything because we want the default link behavior to continue
+        } catch (error) {
+            console.error('Error in click tracking:', error);
+            // Still allow the link navigation to proceed even if tracking fails
+        }
     },
     
     /**

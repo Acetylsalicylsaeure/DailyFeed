@@ -190,6 +190,17 @@ def refresh_feeds():
     thread.start()
     return jsonify({"message": "Feed refresh started"})
 
+@app.route('/api/articles/<int:article_id>/click', methods=['POST'])
+def record_article_click(article_id):
+    """Record when a user clicks on an article link."""
+    rss = get_rss_backend()
+    success = rss.record_click(article_id)
+    
+    if success:
+        return jsonify({"message": "Click recorded"})
+    else:
+        return jsonify({"error": "Failed to record click"}), 400
+
 if __name__ == '__main__':
     # Start the Flask app
     port = int(os.environ.get('PORT', 5000))
