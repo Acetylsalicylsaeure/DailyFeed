@@ -69,6 +69,83 @@ def extract_content(entry) -> str:
     return ''
 
 
+def extract_image_url(entry) -> Optional[str]:
+    """
+    Extract an image URL from a feed entry with support for various formats.
+    Returns the URL of the largest image found, or None if no image is found.
+    """
+    image_url = None
+    max_width = 0
+    
+    # Try to find image in media_content
+    if hasattr(entry, 'media_content') and entry.media_content:
+        for media in entry.media_content:
+            if isinstance(media, dict) and 'url' in media:
+                # Check if media is an image
+                media_type = media.get('type', '')
+                if media_type.startswith('image/'):
+                    width = int(media.get('width', 0))
+                    if width > max_width:
+                        max_width = width
+                        image_url = media['url']
+    
+    # Try to find image in media_thumbnail
+    if not image_url and hasattr(entry, 'media_thumbnail') and entry.media_thumbnail:
+        for thumbnail in entry.media_thumbnail:
+            if isinstance(thumbnail, dict) and 'url' in thumbnail:
+                width = int(thumbnail.get('width', 0))
+                if width > max_width:
+                    max_width = width
+                    image_url = thumbnail['url']
+    
+    # Try to find image in enclosures
+    if not image_url and hasattr(entry, 'enclosures') and entry.enclosures:
+        for enclosure in entry.enclosures:
+            if isinstance(enclosure, dict) and 'type' in enclosure and enclosure['type'].startswith('image/'):
+                if 'url' in enclosure:
+                    image_url = enclosure['url']
+                    break
+    
+    # Try to find image in content or group tags (like in the example)
+    if not image_url:
+        # Check for group tag with content elements
+        if hasattr(entry, 'group') and entry.group:
+            group = entry.group
+            if hasattr(group, 'content'):
+                contents = group.content
+                if isinstance(contents, list):
+                    for content in contents:
+                        if hasattr(content, 'url') and hasattr(content, 'width'):
+                            width = int(getattr(content, 'width', 0))
+                            if width > max_width:
+                                max_width = width
+                                image_url = content.url
+        
+        # Check for direct content tags with width and url
+        if not image_url and hasattr(entry, 'content'):
+            if isinstance(entry.content, list):
+                for content in entry.content:
+                    if isinstance(content, dict) and 'url' in content and content.get('type', '').startswith('image/'):
+                        width = int(content.get('width', 0))
+                        if width > max_width:
+                            max_width = width
+                            image_url = content['url']
+    
+    # Direct content attribute with url
+    if not image_url and hasattr(entry, 'content') and hasattr(entry.content, 'url'):
+        image_url = entry.content.url
+    
+    # Try parsing image from HTML content as a last resort
+    if not image_url:
+        content = extract_content(entry)
+        # Simple regex to extract image URLs from HTML content
+        img_tags = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', content)
+        if img_tags:
+            image_url = img_tags[0]  # Just take the first image
+    
+    return image_url
+
+
 def generate_guid(entry) -> str:
     """
     Generate a consistent GUID for an entry that lacks one.
@@ -147,7 +224,7 @@ class RSSBackend:
             )
             ''')
             
-            # Create articles table
+            # Create articles table with image_url column
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS articles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,12 +235,21 @@ class RSSBackend:
                 description TEXT,
                 content TEXT,
                 author TEXT,
+                image_url TEXT,
                 published_at TIMESTAMP,
                 fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 read BOOLEAN DEFAULT 0,
                 FOREIGN KEY (feed_id) REFERENCES feeds (id)
             )
             ''')
+            
+            # Check if we need to add the image_url column to an existing table
+            try:
+                cursor.execute('SELECT image_url FROM articles LIMIT 1')
+            except sqlite3.OperationalError:
+                # Column doesn't exist, add it
+                cursor.execute('ALTER TABLE articles ADD COLUMN image_url TEXT')
+                logging.info("Added image_url column to articles table")
             
             # Create indices for performance
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_feed_id ON articles (feed_id)')
@@ -310,6 +396,9 @@ class RSSBackend:
                 if not author and hasattr(entry, 'authors') and entry.authors:
                     author = entry.authors[0].name if hasattr(entry.authors[0], 'name') else ''
                 
+                # Extract image URL
+                image_url = extract_image_url(entry)
+                
                 article = {
                     'feed_id': feed_id,
                     'guid': guid,
@@ -318,6 +407,7 @@ class RSSBackend:
                     'description': summary,
                     'content': content,
                     'author': author,
+                    'image_url': image_url,
                     'published_at': published_at
                 }
                 
@@ -326,8 +416,8 @@ class RSSBackend:
                         cursor = conn.cursor()
                         cursor.execute('''
                             INSERT INTO articles 
-                            (feed_id, guid, title, url, description, content, author, published_at) 
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            (feed_id, guid, title, url, description, content, author, image_url, published_at) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ''', (
                                 article['feed_id'], 
                                 article['guid'], 
@@ -335,16 +425,24 @@ class RSSBackend:
                                 article['url'], 
                                 article['description'], 
                                 article['content'], 
-                                article['author'], 
+                                article['author'],
+                                article['image_url'],
                                 article['published_at']
                             )
                         )
                         conn.commit()
                         new_article_count += 1
                 except sqlite3.IntegrityError:
-                    # Article already exists, skip it
-                    pass
-            
+                    # Article already exists, check if we need to update the image_url
+                    if image_url:
+                        with closing(self.get_db_connection()) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute('''
+                                UPDATE articles SET image_url = ?
+                                WHERE guid = ? AND (image_url IS NULL OR image_url = '')
+                                ''', (image_url, guid))
+                            conn.commit()
+                
             logger.info(f"Added {new_article_count} new articles from {feed_url}")
             return new_article_count
             

@@ -1,0 +1,66 @@
+/* Article Image Styles */
+.article-image {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: var(--border-radius-md);
+}
+
+/* Always position image on the right side */
+.article-card.has-image .article-content {
+    display: flex;
+    flex-direction: row;
+    gap: var(--spacing-md);
+}
+
+.article-card.has-image .article-image-container {
+    flex: 0 0 150px;
+    max-width: 150px;
+    height: 120px;
+    order: 2; /* Put image on the right */
+}
+
+.article-card.has-image .article-summary-container {
+    flex: 1;
+    order: 1; /* Put summary on the left */
+}
+
+/* On very small screens, stack the image below */
+@media (max-width: 480px) {
+    .article-card.has-image .article-content {
+        flex-direction: column;
+    }
+    
+    .article-card.has-image .article-image-container {
+        max-width: 100%;
+        height: 180px;
+        order: 1; /* Put image on top on very small screens */
+        margin-bottom: var(--spacing-md);
+    }
+    
+    .article-card.has-image .article-summary-container {
+        order: 2; /* Put summary below on very small screens */
+    }
+}
+
+.article-image-container {
+    overflow: hidden;
+    border-radius: var(--border-radius-md);
+    background-color: var(--color-border);
+    position: relative;
+}
+
+/* Lazy loading animation */
+.article-image.loading {
+    opacity: 0;
+    transition: opacity var(--transition-normal);
+}
+
+.article-image.loaded {
+    opacity: 1;
+}
+
+/* Hide image on error instead of showing an error message */
+.article-image-container.error {
+    display: none;
+}

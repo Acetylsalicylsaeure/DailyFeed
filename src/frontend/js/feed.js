@@ -215,6 +215,15 @@ const FeedManager = {
         const summary = articleElement.querySelector('.article-summary');
         summary.innerHTML = article.description || '';
         
+        // Add image if available - but only if we're not already showing one from the description
+        if (article.image_url && !summary.querySelector('img')) {
+            this.addImageToArticle(articleElement, article);
+        } else if (summary.querySelector('img')) {
+            // If there's already an image in the summary, don't add another one
+            // But we still want the layout to look good
+            articleElement.classList.add('has-image');
+        }
+        
         // Set read toggle text
         const readToggle = articleElement.querySelector('.read-toggle');
         const readStatusText = readToggle.querySelector('.read-status-text');
@@ -225,6 +234,46 @@ const FeedManager = {
         
         // Add to container
         this.articlesContainer.appendChild(articleElement);
+    },
+    
+    /**
+     * Add image to article element
+     * @param {Element} articleElement - Article DOM element
+     * @param {Object} article - Article data
+     */
+    addImageToArticle(articleElement, article) {
+        // Only process one image per article (the main one)
+        // Get the image container template
+        const imageTemplate = document.getElementById('image-container-template');
+        const imageContainer = document.importNode(imageTemplate.content, true).querySelector('.article-image-container');
+        
+        // Get the article content element where we'll insert the image
+        const articleContent = articleElement.querySelector('.article-content');
+        const summaryContainer = articleElement.querySelector('.article-summary-container');
+        
+        // Add class to article to indicate it has an image
+        articleElement.classList.add('has-image');
+        
+        // Set the image source
+        const image = imageContainer.querySelector('.article-image');
+        image.alt = `Image for ${article.title}`;
+        
+        // Add load and error event listeners
+        image.addEventListener('load', () => {
+            image.classList.remove('loading');
+            image.classList.add('loaded');
+        });
+        
+        image.addEventListener('error', () => {
+            // Simply hide the image container on error
+            imageContainer.style.display = 'none';
+        });
+        
+        // Add the image container after the summary container (right side)
+        articleContent.appendChild(imageContainer);
+        
+        // Set the image source last to trigger loading
+        image.src = article.image_url;
     },
     
     /**

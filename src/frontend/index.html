@@ -115,7 +115,10 @@
                     </div>
                 </div>
                 <div class="article-content">
-                    <div class="article-summary"></div>
+                    <!-- Image container will be added conditionally by JavaScript -->
+                    <div class="article-summary-container">
+                        <div class="article-summary"></div>
+                    </div>
                 </div>
                 <div class="article-actions">
                     <button class="read-toggle" aria-label="Toggle read status">
@@ -144,7 +147,13 @@
                 </div>
             </article>
         </template>
-        
+
+        <!-- Image Container Template (for dynamic insertion) -->
+        <template id="image-container-template">
+            <div class="article-image-container">
+                <img class="article-image loading" alt="Article image" loading="lazy">
+            </div>
+        </template>       
         <!-- Feed Item Template (for settings page) -->
         <template id="feed-item-template">
             <div class="feed-item">
