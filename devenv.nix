@@ -2,6 +2,7 @@
 {
   # Python package and version specification
   packages = with pkgs; [ 
+    sqlitebrowser
     python311
     python311Packages.pip
     python311Packages.virtualenv

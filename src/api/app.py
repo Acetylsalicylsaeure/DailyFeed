@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, g
+from flask import Flask, jsonify, request, g, send_from_directory
 import threading
 import time
 import os
@@ -13,7 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger('rss_api')
 
 # Initialize the Flask application
-app = Flask(__name__)
+app = Flask(__name__, static_folder='../frontend')
 
 # Configuration
 DB_PATH = os.environ.get('RSS_DB_PATH', 'rss_aggregator.db')
@@ -54,6 +54,24 @@ def start_background_tasks():
     thread.daemon = True  # The thread will exit when the main process exits
     thread.start()
     logger.info("Background feed fetcher thread started")
+
+# Serve frontend static files
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve_frontend(path):
+    if path == '':
+        return send_from_directory(app.static_folder, 'index.html')
+    try:
+        # First try to serve as a file
+        return send_from_directory(app.static_folder, path)
+    except:
+        # If file not found, serve index.html (for client-side routing)
+        return send_from_directory(app.static_folder, 'index.html')
+
+# Serve service worker at root level
+@app.route('/sw.js')
+def serve_service_worker():
+    return send_from_directory(app.static_folder, 'sw.js')
 
 # API Routes
 @app.route('/api/health', methods=['GET'])

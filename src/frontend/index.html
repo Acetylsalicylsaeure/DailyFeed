@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DailyFeed - Lightweight RSS Reader</title>
+    <meta name="description" content="A resource-efficient RSS aggregator with minimal system requirements">
+    <link rel="stylesheet" href="styles/main.css">
+    <!-- Preload critical JS -->
+    <link rel="preload" href="js/app.js" as="script">
+    <link rel="preload" href="js/api.js" as="script">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1 class="app-title">DailyFeed</h1>
+            <nav class="app-nav">
+                <button id="feed-button" class="nav-button active" aria-label="Articles">
+                    <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none">
+                        <path d="M4 11h16M4 6h16M4 16h16M4 21h16"/>
+                    </svg>
+                    <span class="nav-text">Feed</span>
+                    <span id="unread-count" class="badge" hidden>0</span>
+                </button>
+                <button id="settings-button" class="nav-button" aria-label="Settings">
+                    <svg viewBox="0 0 24 24" width="24" height="24" stroke="currentColor" stroke-width="2" fill="none">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                    <span class="nav-text">Settings</span>
+                </button>
+            </nav>
+        </header>
+        
+        <main class="app-content">
+            <!-- Feed View -->
+            <section id="feed-view" class="view active">
+                <div class="feed-filters">
+                    <select id="feed-filter" aria-label="Filter by feed">
+                        <option value="">All Feeds</option>
+                        <!-- Feeds will be populated here -->
+                    </select>
+                    <label class="toggle-container">
+                        <input type="checkbox" id="unread-filter">
+                        <span class="toggle-label">Unread only</span>
+                    </label>
+                </div>
+                
+                <div id="articles-container" class="articles-container">
+                    <div id="loading-indicator" class="loading-indicator">
+                        <div class="spinner"></div>
+                        <p>Loading articles...</p>
+                    </div>
+                    
+                    <noscript>
+                        <div class="noscript-message">
+                            <p>JavaScript is required to view the articles. Please enable JavaScript or use a compatible browser.</p>
+                        </div>
+                    </noscript>
+                </div>
+                
+                <div id="load-more-container" class="load-more-container" hidden>
+                    <button id="load-more-button" class="load-more-button">Load More</button>
+                </div>
+            </section>
+            
+            <!-- Settings View -->
+            <section id="settings-view" class="view">
+                <div class="settings-section">
+                    <h2>Add New Feed</h2>
+                    <form id="add-feed-form" class="add-feed-form">
+                        <input type="url" id="feed-url" placeholder="Enter RSS feed URL" 
+                               required pattern="https?://.+" title="Please enter a valid URL starting with http:// or https://">
+                        <button type="submit" class="primary-button">Add Feed</button>
+                    </form>
+                    <div id="add-feed-result" class="form-result" aria-live="polite"></div>
+                </div>
+                
+                <div class="settings-section">
+                    <h2>Manage Feeds</h2>
+                    <div id="feeds-list" class="feeds-list">
+                        <div class="loading-indicator">
+                            <div class="spinner"></div>
+                            <p>Loading feeds...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="settings-section">
+                    <h2>Statistics</h2>
+                    <div id="feed-stats" class="feed-stats">
+                        <div class="loading-indicator">
+                            <div class="spinner"></div>
+                            <p>Loading statistics...</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="settings-section">
+                    <h2>Actions</h2>
+                    <button id="refresh-feeds" class="secondary-button">Refresh All Feeds</button>
+                    <div id="refresh-result" class="form-result" aria-live="polite"></div>
+                </div>
+            </section>
+        </main>
+        
+        <!-- Article Template (hidden, used by JavaScript) -->
+        <template id="article-template">
+            <article class="article-card">
+                <div class="article-header">
+                    <h2 class="article-title"><a href="#" target="_blank" rel="noopener noreferrer"></a></h2>
+                    <div class="article-meta">
+                        <span class="article-feed"></span>
+                        <span class="article-date"></span>
+                    </div>
+                </div>
+                <div class="article-content">
+                    <div class="article-summary"></div>
+                </div>
+                <div class="article-actions">
+                    <button class="read-toggle" aria-label="Toggle read status">
+                        <svg class="unread-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                        <svg class="read-icon" viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                        </svg>
+                        <span class="read-status-text">Mark as Read</span>
+                    </button>
+                    <div class="feedback-buttons">
+                        <button class="feedback-button like" aria-label="Like article">
+                            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path>
+                            </svg>
+                        </button>
+                        <button class="feedback-button dislike" aria-label="Dislike article">
+                            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                                <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zm10-13h2a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"></path>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </article>
+        </template>
+        
+        <!-- Feed Item Template (for settings page) -->
+        <template id="feed-item-template">
+            <div class="feed-item">
+                <div class="feed-details">
+                    <h3 class="feed-title"></h3>
+                    <div class="feed-meta">
+                        <span class="feed-article-count"></span>
+                        <span class="feed-last-update"></span>
+                    </div>
+                </div>
+                <div class="feed-actions">
+                    <button class="delete-feed-button" aria-label="Delete feed">
+                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2" fill="none">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                        <span>Delete</span>
+                    </button>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- Scripts loaded deferred to improve initial page load -->
+    <script src="js/api.js" defer></script>
+    <script src="js/feed.js" defer></script>
+    <script src="js/settings.js" defer></script>
+    <script src="js/app.js" defer></script>
+</body>
+</html>
