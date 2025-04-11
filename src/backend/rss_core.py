@@ -636,37 +636,26 @@ class RSSBackend:
                 if cursor.fetchone() is None:
                     logger.warning(f"Attempted to record click for non-existent article ID: {article_id}")
                     return False
-                    
-                # Insert a new feedback record with clicked=1 if not exists, or update existing
-                cursor.execute('''
-                    INSERT INTO user_feedback (article_id, feedback, clicked) 
-                    VALUES (?, 0, 1)
-                    ON CONFLICT (article_id) WHERE clicked = 0
-                    DO UPDATE SET clicked = 1, timestamp = CURRENT_TIMESTAMP
-                ''')
                 
-                # If the above fails due to SQLite version not supporting ON CONFLICT,
-                # fall back to a more compatible approach
-                if cursor.rowcount <= 0:
-                    # First see if there's an existing record to update
+                # Check if there's already a feedback record for this article
+                cursor.execute(
+                    'SELECT id FROM user_feedback WHERE article_id = ? LIMIT 1',
+                    (article_id,)
+                )
+                existing = cursor.fetchone()
+                
+                if existing:
+                    # Update existing record
                     cursor.execute(
-                        'SELECT id FROM user_feedback WHERE article_id = ? AND clicked = 0 LIMIT 1',
+                        'UPDATE user_feedback SET clicked = 1, timestamp = CURRENT_TIMESTAMP WHERE id = ?',
+                        (existing[0],)
+                    )
+                else:
+                    # Insert new record
+                    cursor.execute(
+                        'INSERT INTO user_feedback (article_id, feedback, clicked) VALUES (?, 0, 1)',
                         (article_id,)
                     )
-                    existing = cursor.fetchone()
-                    
-                    if existing:
-                        # Update existing record
-                        cursor.execute(
-                            'UPDATE user_feedback SET clicked = 1, timestamp = CURRENT_TIMESTAMP WHERE id = ?',
-                            (existing[0],)
-                        )
-                    else:
-                        # Insert new record
-                        cursor.execute(
-                            'INSERT INTO user_feedback (article_id, feedback, clicked) VALUES (?, 0, 1)',
-                            (article_id,)
-                        )
                 
                 conn.commit()
                 return True
