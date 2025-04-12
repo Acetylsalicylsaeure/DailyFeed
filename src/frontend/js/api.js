@@ -148,5 +148,39 @@ const API = {
         return this.request(`/articles/${articleId}/click`, {
             method: 'POST'
         });
+    },
+
+    /**
+     * Get all application settings
+     * @returns {Promise<Object>} - Settings object
+     */
+    async getSettings() {
+        return this.request('/settings');
+    },
+
+    /**
+     * Get a specific setting
+     * @param {string} key - Setting key
+     * @returns {Promise<Object>} - Setting data
+     */
+    async getSetting(key) {
+        return this.request(`/settings/${key}`);
+    },
+
+    /**
+     * Update a setting
+     * @param {string} key - Setting key
+     * @param {string|number|boolean} value - New value
+     * @param {string} [description] - Optional description
+     * @returns {Promise<Object>} - Response data
+     */
+    async updateSetting(key, value, description) {
+        const data = { value };
+        if (description) data.description = description;
+        
+        return this.request(`/settings/${key}`, {
+            method: 'PUT',
+            body: JSON.stringify(data)
+        });
     }
 };

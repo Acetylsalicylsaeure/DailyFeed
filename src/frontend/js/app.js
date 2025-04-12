@@ -28,6 +28,7 @@ const App = {
         // Initialize managers
         FeedManager.init();
         SettingsManager.init();
+        AppSettingsManager.init();
         
         // Check for hash in URL for direct navigation
         this.checkUrlHash();

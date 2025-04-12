@@ -270,6 +270,34 @@ class RSSBackend:
                 # Column doesn't exist, add it
                 cursor.execute('ALTER TABLE user_feedback ADD COLUMN clicked BOOLEAN DEFAULT 0')
                 logging.info("Added clicked column to user_feedback table")
+                
+            # Create settings table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            
+            # Insert default settings if they don't exist
+            default_settings = [
+                ('update_interval', '600', 'Global feed update interval in seconds'),
+                ('half_time', '86400', 'Feedback half-life in seconds (1 day)'),
+                ('max_articles_per_feed', '100', 'Maximum number of articles to keep per feed'),
+                ('embedding_batch_size', '10', 'Number of articles to process at once for embeddings'),
+                ('ai_enabled', 'false', 'Whether AI-powered ranking is enabled'),
+                ('min_feedback_for_training', '10', 'Minimum feedback entries required before AI ranking is used'),
+                ('auto_cleanup_days', '30', 'Number of days to keep articles before cleanup')
+            ]
+            
+            for key, value, description in default_settings:
+                cursor.execute('''
+                    INSERT OR IGNORE INTO settings (key, value, description)
+                    VALUES (?, ?, ?)
+                ''', (key, value, description))
             
             # Create indices for performance
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_feed_id ON articles (feed_id)')
@@ -278,7 +306,7 @@ class RSSBackend:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_article_id ON user_feedback (article_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_article_clicked ON user_feedback (article_id, clicked)')
             
-            conn.commit()    
+            conn.commit()
 
     def add_feed(self, url: str) -> Tuple[bool, str]:
         """
@@ -316,6 +344,9 @@ class RSSBackend:
     
     def fetch_all_feeds(self) -> None:
         """Update all active feeds in the database."""
+        # Get global update interval from settings (default 600 seconds = 10 minutes)
+        global_update_interval = self.get_int_setting('update_interval', 600)
+        
         with closing(self.get_db_connection()) as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -327,11 +358,13 @@ class RSSBackend:
             # Check if it's time to update this feed
             current_time = datetime.datetime.now().timestamp()
             last_fetched = feed['last_fetched'] or 0
-            update_frequency = feed['update_frequency']
+            
+            # Use feed's specific update_frequency if set, otherwise use global setting
+            update_frequency = feed['update_frequency'] or global_update_interval
             
             if current_time - last_fetched > update_frequency:
-                self.fetch_feed_articles(feed['url'])
-    
+                self.fetch_feed_articles(feed['url'])    
+
     def fetch_feed_articles(self, feed_url: str) -> int:
         """
         Fetch and store articles from a specific feed.
@@ -687,6 +720,111 @@ class RSSBackend:
             
             interactions = [dict(row) for row in cursor.fetchall()]
             return interactions
+
+    def get_setting(self, key, default=None):
+        """
+        Get a setting value from the database.
+        
+        Args:
+            key (str): The setting key to retrieve
+            default: The default value to return if the setting doesn't exist
+            
+        Returns:
+            The setting value, or the default if not found
+        """
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
+            result = cursor.fetchone()
+            
+            if result:
+                return result['value']
+            return default
+
+    def get_int_setting(self, key, default=0):
+        """Get a setting as an integer."""
+        value = self.get_setting(key, default)
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
+    def get_float_setting(self, key, default=0.0):
+        """Get a setting as a float."""
+        value = self.get_setting(key, default)
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
+    def get_bool_setting(self, key, default=False):
+        """Get a setting as a boolean."""
+        value = self.get_setting(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ('true', 'yes', '1', 'on')
+        return bool(value)
+
+    def update_setting(self, key, value, description=None):
+        """
+        Update a setting in the database.
+        
+        Args:
+            key (str): The setting key to update
+            value: The new value (will be converted to string)
+            description (str, optional): Description of the setting
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            with closing(self.get_db_connection()) as conn:
+                cursor = conn.cursor()
+                
+                # Check if setting exists
+                cursor.execute('SELECT 1 FROM settings WHERE key = ?', (key,))
+                exists = cursor.fetchone() is not None
+                
+                if exists:
+                    if description:
+                        cursor.execute('''
+                            UPDATE settings 
+                            SET value = ?, description = ?, updated_at = CURRENT_TIMESTAMP 
+                            WHERE key = ?
+                        ''', (str(value), description, key))
+                    else:
+                        cursor.execute('''
+                            UPDATE settings 
+                            SET value = ?, updated_at = CURRENT_TIMESTAMP 
+                            WHERE key = ?
+                        ''', (str(value), key))
+                else:
+                    cursor.execute('''
+                        INSERT INTO settings (key, value, description)
+                        VALUES (?, ?, ?)
+                    ''', (key, str(value), description or ''))
+                    
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error updating setting {key}: {str(e)}")
+            return False
+
+    def get_all_settings(self):
+        """
+        Get all settings as a dictionary.
+        
+        Returns:
+            dict: Dictionary of all settings
+        """
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT key, value, description, updated_at FROM settings')
+            return {row['key']: {'value': row['value'], 
+                               'description': row['description'],
+                               'updated_at': row['updated_at']} 
+                    for row in cursor.fetchall()}
 
 
 # Example usage

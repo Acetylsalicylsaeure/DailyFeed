@@ -201,6 +201,41 @@ def record_article_click(article_id):
     else:
         return jsonify({"error": "Failed to record click"}), 400
 
+@app.route('/api/settings', methods=['GET'])
+def get_settings():
+    """Get all application settings."""
+    rss = get_rss_backend()
+    settings = rss.get_all_settings()
+    return jsonify(settings)
+
+@app.route('/api/settings/<key>', methods=['GET'])
+def get_setting(key):
+    """Get a specific setting by key."""
+    rss = get_rss_backend()
+    value = rss.get_setting(key)
+    
+    if value is None:
+        return jsonify({"error": f"Setting '{key}' not found"}), 404
+        
+    return jsonify({"key": key, "value": value})
+
+@app.route('/api/settings/<key>', methods=['PUT'])
+def update_setting(key):
+    """Update a specific setting."""
+    rss = get_rss_backend()
+    data = request.json
+    
+    if not data or 'value' not in data:
+        return jsonify({"error": "Value is required"}), 400
+        
+    description = data.get('description')
+    success = rss.update_setting(key, data['value'], description)
+    
+    if success:
+        return jsonify({"message": f"Setting '{key}' updated successfully"})
+    else:
+        return jsonify({"error": f"Failed to update setting '{key}'"}), 500
+
 if __name__ == '__main__':
     # Start the Flask app
     port = int(os.environ.get('PORT', 5000))
