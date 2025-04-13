@@ -136,17 +136,51 @@ const SettingsManager = {
         const url = this.feedUrlInput.value.trim();
         if (!url) return;
         
+        // Validate URL format before sending
+        let feedUrl = url;
+        try {
+            // Try to construct a URL to validate format
+            new URL(url);
+        } catch (e) {
+            // If URL is invalid, try adding http:// prefix
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                feedUrl = 'https://' + url;
+                try {
+                    new URL(feedUrl);
+                } catch (e) {
+                    this.addFeedResult.textContent = `Invalid URL format. Please enter a valid URL including http:// or https://`;
+                    this.addFeedResult.className = 'form-result error';
+                    return;
+                }
+            } else {
+                this.addFeedResult.textContent = `Invalid URL format. Please check the URL and try again.`;
+                this.addFeedResult.className = 'form-result error';
+                return;
+            }
+        }
+        
         // Disable form during submission
         this.feedUrlInput.disabled = true;
         this.addFeedForm.querySelector('button').disabled = true;
-        this.addFeedResult.textContent = 'Adding feed...';
+        this.addFeedResult.textContent = 'Adding feed, please wait...';
         this.addFeedResult.className = 'form-result';
         
         try {
-            await API.addFeed(url);
+            const result = await API.addFeed(feedUrl);
             
-            // Show success message
-            this.addFeedResult.textContent = 'Feed added successfully!';
+            // Show success message with feed details if available
+            if (result && result.feed_info) {
+                const feedInfo = result.feed_info;
+                this.addFeedResult.innerHTML = `
+                    <div>Feed added successfully!</div>
+                    <div class="feed-result-details">
+                        <strong>${feedInfo.title || 'Untitled Feed'}</strong> 
+                        ${feedInfo.article_count ? `(${feedInfo.article_count} articles)` : ''}
+                    </div>
+                `;
+            } else {
+                this.addFeedResult.textContent = 'Feed added successfully!';
+            }
             this.addFeedResult.className = 'form-result success';
             
             // Clear input
@@ -162,21 +196,38 @@ const SettingsManager = {
             }
         } catch (error) {
             console.error('Error adding feed:', error);
-            this.addFeedResult.textContent = `Failed to add feed: ${error.message}`;
+            
+            // Provide helpful error message based on the error type
+            let errorMessage = error.message;
+            
+            if (error.message.includes('timed out')) {
+                errorMessage = `Request timed out. The server took too long to process this feed. Possible causes:<br>
+                • The feed URL might be incorrect<br>
+                • The feed server might be slow or down<br>
+                • The feed might be very large`;
+            } else if (error.message.includes('Invalid feed')) {
+                errorMessage = `Invalid feed format. The URL might not point to a valid RSS or Atom feed.`;
+            } else if (error.message.includes('already exists')) {
+                errorMessage = `This feed has already been added to your collection.`;
+            }
+            
+            this.addFeedResult.innerHTML = `Failed to add feed: ${errorMessage}`;
             this.addFeedResult.className = 'form-result error';
         } finally {
             // Re-enable form
             this.feedUrlInput.disabled = false;
             this.addFeedForm.querySelector('button').disabled = false;
             
-            // Clear message after 5 seconds
-            setTimeout(() => {
-                this.addFeedResult.textContent = '';
-                this.addFeedResult.className = 'form-result';
-            }, 5000);
+            // Clear success message after 5 seconds, but keep error messages
+            if (this.addFeedResult.className.includes('success')) {
+                setTimeout(() => {
+                    this.addFeedResult.textContent = '';
+                    this.addFeedResult.className = 'form-result';
+                }, 5000);
+            }
         }
-    },
-    
+    },    
+
     /**
      * Confirm feed deletion
      * @param {Object} feed - Feed data

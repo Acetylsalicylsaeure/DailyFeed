@@ -93,12 +93,21 @@ def add_feed():
     if not data or 'url' not in data:
         return jsonify({"error": "URL is required"}), 400
     
+    feed_url = data['url']
+    logger.info(f"Attempting to add feed: {feed_url}")
+    
     rss = get_rss_backend()
-    success, message = rss.add_feed(data['url'])
+    success, message, feed_info = rss.add_feed(feed_url)
     
     if success:
-        return jsonify({"message": message}), 201
+        logger.info(f"Successfully added feed: {feed_url} - {message}")
+        response = {
+            "message": message,
+            "feed_info": feed_info
+        }
+        return jsonify(response), 201
     else:
+        logger.error(f"Failed to add feed: {feed_url} - {message}")
         return jsonify({"error": message}), 400
 
 @app.route('/api/feeds/<int:feed_id>', methods=['DELETE'])
@@ -235,6 +244,7 @@ def update_setting(key):
         return jsonify({"message": f"Setting '{key}' updated successfully"})
     else:
         return jsonify({"error": f"Failed to update setting '{key}'"}), 500
+
 
 if __name__ == '__main__':
     # Start the Flask app

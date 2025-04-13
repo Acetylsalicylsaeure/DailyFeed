@@ -649,52 +649,112 @@ class RSSBackend:
         
         conn.commit()
 
-    def add_feed(self, url: str) -> Tuple[bool, str]:
+    def add_feed(self, url: str) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
         Add a new RSS feed to the database.
-        Returns (success, message)
+        
+        Args:
+            url: The URL of the feed to add
+            
+        Returns:
+            Tuple containing:
+            - success: Boolean indicating success/failure
+            - message: Status message
+            - feed_info: Dictionary with feed information (or None on failure)
         """
+        feed_info = None
         try:
+            logger.info(f"Attempting to parse feed: {url}")
+            
             # Parse the feed to get its metadata
             feed_data = feedparser.parse(url)
             
+            if not feed_data.entries and not hasattr(feed_data.feed, 'title'):
+                logger.error(f"No valid feed found at URL: {url}")
+                return False, "No valid RSS or Atom feed found at this URL", None
+            
             if hasattr(feed_data, 'bozo_exception'):
-                logger.error(f"Error parsing feed {url}: {feed_data.bozo_exception}")
-                return False, f"Invalid feed: {str(feed_data.bozo_exception)}"
+                exception_str = str(feed_data.bozo_exception)
+                logger.error(f"Error parsing feed {url}: {exception_str}")
                 
-            feed_info = feed_data.feed
+                # Provide more specific error messages for common issues
+                if "document declared as" in exception_str.lower():
+                    return False, f"Feed parsing error: XML declaration issue. The feed may have invalid XML formatting.", None
+                elif "document ends" in exception_str.lower():
+                    return False, f"Feed parsing error: Incomplete XML document. The feed may be truncated.", None
+                elif "no element found" in exception_str.lower():
+                    return False, f"Feed parsing error: Empty document or not an XML feed.", None
+                else:
+                    return False, f"Invalid feed: {exception_str}", None
+            
+            raw_feed_info = feed_data.feed
+            
+            # Prepare feed info dictionary with available metadata
+            feed_info = {
+                'title': raw_feed_info.get('title', 'Unknown Feed'),
+                'description': raw_feed_info.get('description', raw_feed_info.get('subtitle', '')),
+                'link': raw_feed_info.get('link', url),
+                'format': 'Unknown'
+            }
             
             # Detect feed format
-            feed_format = "Unknown"
             if hasattr(feed_data, 'version'):
-                feed_format = feed_data.version
-            elif hasattr(feed_info, 'xmlns'):
-                if 'atom' in feed_info.xmlns:
-                    feed_format = "Atom"
-                elif 'rdf' in feed_info.xmlns:
-                    feed_format = "RDF"
-                elif 'rss' in feed_info.xmlns:
-                    feed_format = "RSS"
+                feed_info['format'] = feed_data.version
+            elif hasattr(raw_feed_info, 'xmlns'):
+                xmlns = raw_feed_info.xmlns
+                if isinstance(xmlns, str):
+                    if 'atom' in xmlns:
+                        feed_info['format'] = "Atom"
+                    elif 'rdf' in xmlns:
+                        feed_info['format'] = "RDF"
+                    elif 'rss' in xmlns:
+                        feed_info['format'] = "RSS"
+            
+            # Count articles
+            feed_info['article_count'] = len(feed_data.entries)
+            
+            # Try to get feed language
+            if hasattr(raw_feed_info, 'language'):
+                feed_info['language'] = raw_feed_info.language
+            
+            # Log feed details for debugging
+            logger.info(f"Feed details - Title: {feed_info['title']}, Format: {feed_info['format']}, Articles: {feed_info['article_count']}")
             
             with closing(self.get_db_connection()) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     'INSERT INTO feeds (title, url, description, feed_format) VALUES (?, ?, ?, ?)',
-                    (feed_info.get('title', 'Unknown'), url, feed_info.get('description', ''), feed_format)
+                    (feed_info['title'], url, feed_info['description'], feed_info['format'])
                 )
                 conn.commit()
                 
-                # Fetch articles right away
-                self.fetch_feed_articles(url)
+                # Get the inserted feed ID
+                feed_id = cursor.lastrowid
+                feed_info['id'] = feed_id
                 
-                return True, "Feed added successfully"
+                # Fetch articles right away
+                try:
+                    article_count = self.fetch_feed_articles(url)
+                    feed_info['processed_articles'] = article_count
+                    logger.info(f"Processed {article_count} articles from feed {url}")
+                except Exception as fetch_error:
+                    logger.error(f"Error fetching articles for {url}: {str(fetch_error)}")
+                    # Still return success since the feed was added
+                
+                return True, "Feed added successfully", feed_info
                 
         except sqlite3.IntegrityError:
-            return False, "Feed URL already exists"
+            logger.warning(f"Feed URL already exists: {url}")
+            return False, "Feed URL already exists in your collection", None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error when adding feed {url}: {str(e)}")
+            return False, f"Network error: {str(e)}", None
         except Exception as e:
-            logger.error(f"Error adding feed {url}: {str(e)}")
-            return False, f"Error adding feed: {str(e)}"
-    
+            error_message = str(e)
+            logger.error(f"Error adding feed {url}: {error_message}", exc_info=True)
+            return False, f"Error adding feed: {error_message}", None    
+
+
     def fetch_all_feeds(self) -> None:
         """Update all active feeds in the database."""
         # Get global update interval from settings (default 600 seconds = 10 minutes)

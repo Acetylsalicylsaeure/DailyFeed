@@ -629,5 +629,22 @@ input[type="number"]::-webkit-outer-spin-button {
     }
 }
 
+.form-result.success {
+    color: var(--color-success);
+}
+
+.form-result.error {
+    color: var(--color-error);
+}
+
+.feed-result-details {
+    margin-top: var(--spacing-xs);
+    font-size: var(--font-size-sm);
+}
+
+.form-result.error {
+    line-height: 1.4;
+}
+
 /* Import article image styles at the end of main.css */
 @import url('styles/article-images.css');

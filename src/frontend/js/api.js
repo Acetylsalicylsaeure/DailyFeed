@@ -30,16 +30,20 @@ const API = {
             clearTimeout(timeout);
             
             if (!response.ok) {
-                const errorData = await response.json().catch(() => ({
-                    error: `HTTP error: ${response.status} ${response.statusText}`
-                }));
-                throw new Error(errorData.error || `HTTP error: ${response.status}`);
+                // Try to get detailed error information
+                try {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || errorData.message || `HTTP error: ${response.status} ${response.statusText}`);
+                } catch (jsonError) {
+                    // If we can't parse JSON, provide status information
+                    throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
+                }
             }
             
             return await response.json();
         } catch (error) {
             if (error.name === 'AbortError') {
-                throw new Error('Request timed out');
+                throw new Error('Request timed out. The server took too long to respond. Please check your feed URL and try again.');
             }
             throw error;
         }
