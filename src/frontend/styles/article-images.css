@@ -1,12 +1,12 @@
 /* Article Image Styles */
 .article-image {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
+    max-width: 100%;
+    height: auto;
+    object-fit: contain;
     border-radius: var(--border-radius-md);
 }
 
-/* Always position image on the right side */
+/* Position image on the right side */
 .article-card.has-image .article-content {
     display: flex;
     flex-direction: row;
@@ -18,11 +18,20 @@
     max-width: 150px;
     height: 120px;
     order: 2; /* Put image on the right */
+    overflow: hidden; /* Prevent overflow */
 }
 
 .article-card.has-image .article-summary-container {
     flex: 1;
     order: 1; /* Put summary on the left */
+    max-width: calc(100% - 150px - var(--spacing-md)); /* Account for image width and gap */
+}
+
+/* Handle images within summary */
+.article-summary img {
+    max-width: 100%;
+    height: auto;
+    object-fit: contain;
 }
 
 /* On very small screens, stack the image below */
@@ -40,6 +49,7 @@
     
     .article-card.has-image .article-summary-container {
         order: 2; /* Put summary below on very small screens */
+        max-width: 100%; /* Full width on small screens */
     }
 }
 
@@ -48,6 +58,12 @@
     border-radius: var(--border-radius-md);
     background-color: var(--color-border);
     position: relative;
+}
+
+/* Also constrain images in article content/summary */
+.article-summary-container img {
+    max-width: 100%;
+    height: auto;
 }
 
 /* Lazy loading animation */
