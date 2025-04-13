@@ -55,46 +55,75 @@ def extract_authors(entry) -> List[str]:
     Extract all authors from an entry with support for various formats.
     Returns a list of author names.
     """
-    authors = []
+    raw_authors = []
     
     # Standard author field
     if hasattr(entry, 'author') and entry.author:
-        authors.append(entry.author)
+        raw_authors.append(entry.author)
     
     # Multiple authors list
     if hasattr(entry, 'authors') and entry.authors:
         for author in entry.authors:
             if isinstance(author, dict) and 'name' in author:
-                authors.append(author['name'])
+                raw_authors.append(author['name'])
             elif hasattr(author, 'name'):
-                authors.append(author.name)
+                raw_authors.append(author.name)
     
     # Dublin Core creator(s)
     if hasattr(entry, 'dc_creator'):
         if isinstance(entry.dc_creator, list):
             for creator in entry.dc_creator:
-                authors.append(creator)
-        else:
-            authors.append(entry.dc_creator)
+                if creator:
+                    raw_authors.append(creator)
+        elif entry.dc_creator:
+            raw_authors.append(entry.dc_creator)
     
-    # Look for comma-separated author lists in single strings
-    authors_processed = []
-    for author in authors:
-        if isinstance(author, str):
-            # Check for common separator patterns in author lists
-            if ',' in author or ' and ' in author or ';' in author:
-                # Split by various possible separators
-                parts = re.split(r',|\sand\s|;', author)
-                authors_processed.extend([p.strip() for p in parts if p.strip()])
+    # Process and split author strings to handle various formats
+    processed_authors = []
+    
+    for author in raw_authors:
+        if not isinstance(author, str):
+            continue
+            
+        author = author.strip()
+        if not author:
+            continue
+        
+        # Split by semicolons or " and " which are clear author separators
+        if ';' in author or ' and ' in author:
+            parts = re.split(r';\s*|\s+and\s+', author)
+            processed_authors.extend([p.strip() for p in parts if p.strip()])
+            continue
+        
+        # Check for comma-separated lists of authors
+        if ',' in author:
+            parts = [p.strip() for p in author.split(',') if p.strip()]
+            
+            # Use heuristics to determine if this is a list or "Last, First" format
+            if len(parts) >= 3:
+                # Three or more parts is likely a list of authors
+                processed_authors.extend(parts)
+            elif len(parts) == 2:
+                # For two parts, check word counts to guess the format
+                first_part_words = len(parts[0].split())
+                second_part_words = len(parts[1].split())
+                
+                if first_part_words >= 2 or second_part_words >= 3:
+                    # Patterns that don't match typical "Last, First" format
+                    processed_authors.extend(parts)
+                else:
+                    # Likely "Last, First" format or ambiguous
+                    processed_authors.append(author)
             else:
-                authors_processed.append(author.strip())
+                # Single part with commas inside - keep as is
+                processed_authors.append(author)
+            continue
+        
+        # No special separators - add as a single author
+        processed_authors.append(author)
     
-    # Return deduplicated list
-    if authors_processed:
-        return list(dict.fromkeys(authors_processed))
-    
-    return authors
-
+    # Remove duplicates while preserving order
+    return list(dict.fromkeys(processed_authors))
 
 def extract_categories(entry) -> List[str]:
     """
