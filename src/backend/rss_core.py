@@ -5,8 +5,10 @@ import logging
 import datetime
 import hashlib
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 from contextlib import closing
+import xml.etree.ElementTree as ET
+import json
 
 # Configure logging
 logging.basicConfig(
@@ -35,10 +37,104 @@ def extract_published_date(entry) -> Optional[float]:
                 date_str = getattr(entry, date_field)
                 parsed_date = date_parser.parse(date_str)
                 return time.mktime(parsed_date.timetuple())
+        
+        # Try Dublin Core date format
+        if hasattr(entry, 'dc_date'):
+            date_str = entry.dc_date
+            parsed_date = date_parser.parse(date_str)
+            return time.mktime(parsed_date.timetuple())
+            
     except (ImportError, ValueError, AttributeError) as e:
         logging.debug(f"Error parsing date string: {e}")
     
     return None
+
+
+def extract_authors(entry) -> List[str]:
+    """
+    Extract all authors from an entry with support for various formats.
+    Returns a list of author names.
+    """
+    authors = []
+    
+    # Standard author field
+    if hasattr(entry, 'author') and entry.author:
+        authors.append(entry.author)
+    
+    # Multiple authors list
+    if hasattr(entry, 'authors') and entry.authors:
+        for author in entry.authors:
+            if isinstance(author, dict) and 'name' in author:
+                authors.append(author['name'])
+            elif hasattr(author, 'name'):
+                authors.append(author.name)
+    
+    # Dublin Core creator(s)
+    if hasattr(entry, 'dc_creator'):
+        if isinstance(entry.dc_creator, list):
+            for creator in entry.dc_creator:
+                authors.append(creator)
+        else:
+            authors.append(entry.dc_creator)
+    
+    # Look for comma-separated author lists in single strings
+    authors_processed = []
+    for author in authors:
+        if isinstance(author, str):
+            # Check for common separator patterns in author lists
+            if ',' in author or ' and ' in author or ';' in author:
+                # Split by various possible separators
+                parts = re.split(r',|\sand\s|;', author)
+                authors_processed.extend([p.strip() for p in parts if p.strip()])
+            else:
+                authors_processed.append(author.strip())
+    
+    # Return deduplicated list
+    if authors_processed:
+        return list(dict.fromkeys(authors_processed))
+    
+    return authors
+
+
+def extract_categories(entry) -> List[str]:
+    """
+    Extract all categories from an entry with support for various formats.
+    Returns a list of category names.
+    """
+    categories = []
+    
+    # Standard tags/categories list
+    if hasattr(entry, 'tags'):
+        for tag in entry.tags:
+            if isinstance(tag, dict) and 'term' in tag:
+                categories.append(tag['term'])
+            elif hasattr(tag, 'term'):
+                categories.append(tag.term)
+            elif isinstance(tag, str):
+                categories.append(tag)
+    
+    # Regular categories
+    if hasattr(entry, 'category'):
+        if isinstance(entry.category, list):
+            categories.extend(entry.category)
+        else:
+            categories.append(entry.category)
+    
+    if hasattr(entry, 'categories'):
+        if isinstance(entry.categories, list):
+            categories.extend(entry.categories)
+        else:
+            categories.append(entry.categories)
+    
+    # Dublin Core subject(s)
+    if hasattr(entry, 'dc_subject'):
+        if isinstance(entry.dc_subject, list):
+            categories.extend(entry.dc_subject)
+        else:
+            categories.append(entry.dc_subject)
+    
+    # Return deduplicated list
+    return list(dict.fromkeys([c.strip() for c in categories if c and isinstance(c, str)]))
 
 
 def extract_content(entry) -> str:
@@ -58,6 +154,10 @@ def extract_content(entry) -> str:
     # RSS feeds often have content in content:encoded
     if hasattr(entry, 'content_encoded') and entry.content_encoded:
         return entry.content_encoded
+    
+    # Dublin Core content
+    if hasattr(entry, 'dc_content') and entry.dc_content:
+        return entry.dc_content
     
     # Fallback to summary/description
     if hasattr(entry, 'summary') and entry.summary:
@@ -146,6 +246,38 @@ def extract_image_url(entry) -> Optional[str]:
     return image_url
 
 
+def extract_doi(entry) -> Optional[str]:
+    """
+    Extract DOI (Digital Object Identifier) from the entry.
+    """
+    # Check for DOI in specific fields
+    if hasattr(entry, 'prism_doi'):
+        return entry.prism_doi
+    
+    if hasattr(entry, 'dc_identifier'):
+        identifier = entry.dc_identifier
+        if isinstance(identifier, list):
+            for item in identifier:
+                if item.startswith('doi:'):
+                    return item[4:]
+        elif isinstance(identifier, str) and identifier.startswith('doi:'):
+            return identifier[4:]
+    
+    # Try to find DOI in the link
+    if hasattr(entry, 'link'):
+        doi_match = re.search(r'doi\.org/([^/\s]+)', entry.link)
+        if doi_match:
+            return doi_match.group(1)
+    
+    # Try to find DOI in the content
+    content = extract_content(entry)
+    doi_match = re.search(r'doi\.org/([^/\s<>"\']+)', content)
+    if doi_match:
+        return doi_match.group(1)
+    
+    return None
+
+
 def generate_guid(entry) -> str:
     """
     Generate a consistent GUID for an entry that lacks one.
@@ -153,6 +285,11 @@ def generate_guid(entry) -> str:
     # Try to use the entry's id first
     if hasattr(entry, 'id') and entry.id:
         return entry.id
+    
+    # Check for DOI
+    doi = extract_doi(entry)
+    if doi:
+        return f"doi:{doi}"
     
     # Next try the link
     if hasattr(entry, 'link') and entry.link:
@@ -220,11 +357,12 @@ class RSSBackend:
                 active BOOLEAN DEFAULT 1,
                 error_count INTEGER DEFAULT 0,
                 last_error TEXT,
+                feed_format TEXT,  -- Store original feed format (RSS, Atom, RDF, etc.)
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             ''')
             
-            # Create articles table with image_url column
+            # Create articles table with enhanced metadata
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS articles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -234,43 +372,70 @@ class RSSBackend:
                 url TEXT NOT NULL,
                 description TEXT,
                 content TEXT,
-                author TEXT,
                 image_url TEXT,
                 published_at TIMESTAMP,
                 fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 read BOOLEAN DEFAULT 0,
+                doi TEXT,  -- DOI for scientific papers
+                language TEXT,  -- Language of the article
+                credit TEXT,  -- Image/content credit
+                raw_data TEXT,  -- Store the original entry data for debugging
                 FOREIGN KEY (feed_id) REFERENCES feeds (id)
             )
             ''')
             
-            # Check if we need to add the image_url column to an existing table
-            try:
-                cursor.execute('SELECT image_url FROM articles LIMIT 1')
-            except sqlite3.OperationalError:
-                # Column doesn't exist, add it
-                cursor.execute('ALTER TABLE articles ADD COLUMN image_url TEXT')
-                logging.info("Added image_url column to articles table")
+            # Create authors table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS authors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            )
+            ''')
+            
+            # Create article_authors junction table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS article_authors (
+                article_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                author_position INTEGER,  -- Order of authors
+                PRIMARY KEY (article_id, author_id),
+                FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE CASCADE,
+                FOREIGN KEY (author_id) REFERENCES authors (id)
+            )
+            ''')
+            
+            # Create categories table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            )
+            ''')
+            
+            # Create article_categories junction table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS article_categories (
+                article_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                PRIMARY KEY (article_id, category_id),
+                FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE CASCADE,
+                FOREIGN KEY (category_id) REFERENCES categories (id)
+            )
+            ''')
             
             # Create user_feedback table for AI ranking
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 article_id INTEGER NOT NULL,
+                user_id TEXT,  -- Optional user identifier
                 feedback INTEGER NOT NULL, -- 1 for positive, -1 for negative
                 clicked BOOLEAN DEFAULT 0, -- Track if the article link was clicked
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (article_id) REFERENCES articles (id)
+                FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE CASCADE
             )
             ''')
             
-            # Check if we need to add the clicked column to an existing user_feedback table
-            try:
-                cursor.execute('SELECT clicked FROM user_feedback LIMIT 1')
-            except sqlite3.OperationalError:
-                # Column doesn't exist, add it
-                cursor.execute('ALTER TABLE user_feedback ADD COLUMN clicked BOOLEAN DEFAULT 0')
-                logging.info("Added clicked column to user_feedback table")
-                
             # Create settings table
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS settings (
@@ -290,7 +455,9 @@ class RSSBackend:
                 ('embedding_batch_size', '10', 'Number of articles to process at once for embeddings'),
                 ('ai_enabled', 'false', 'Whether AI-powered ranking is enabled'),
                 ('min_feedback_for_training', '10', 'Minimum feedback entries required before AI ranking is used'),
-                ('auto_cleanup_days', '30', 'Number of days to keep articles before cleanup')
+                ('auto_cleanup_days', '30', 'Number of days to keep articles before cleanup'),
+                ('auto_read', 'true', 'Automatically mark articles as read when scrolled past'),
+                ('store_raw_data', 'false', 'Store raw entry data for debugging')
             ]
             
             for key, value, description in default_settings:
@@ -303,10 +470,184 @@ class RSSBackend:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_feed_id ON articles (feed_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_published_at ON articles (published_at)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_articles_read ON articles (read)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_article_authors_article_id ON article_authors (article_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_article_authors_author_id ON article_authors (author_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_article_categories_article_id ON article_categories (article_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_article_categories_category_id ON article_categories (category_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_article_id ON user_feedback (article_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_article_clicked ON user_feedback (article_id, clicked)')
             
             conn.commit()
+            
+            # Handle schema migrations for existing databases
+            self._handle_schema_migrations(conn)
+    
+    def _handle_schema_migrations(self, conn):
+        """
+        Handle schema migrations for existing databases.
+        Safely adds new columns and tables if they don't exist.
+        """
+        cursor = conn.cursor()
+        
+        # Check if we need to add columns to the feeds table
+        try:
+            cursor.execute('SELECT feed_format FROM feeds LIMIT 1')
+        except sqlite3.OperationalError:
+            # Column doesn't exist, add it
+            cursor.execute('ALTER TABLE feeds ADD COLUMN feed_format TEXT')
+            logging.info("Added feed_format column to feeds table")
+        
+        # Check if we need to add columns to the articles table
+        for column, type_def in [
+            ('doi', 'TEXT'),
+            ('language', 'TEXT'),
+            ('credit', 'TEXT'),
+            ('raw_data', 'TEXT')
+        ]:
+            try:
+                cursor.execute(f'SELECT {column} FROM articles LIMIT 1')
+            except sqlite3.OperationalError:
+                # Column doesn't exist, add it
+                cursor.execute(f'ALTER TABLE articles ADD COLUMN {column} {type_def}')
+                logging.info(f"Added {column} column to articles table")
+        
+        # Check if authors and article_authors tables exist
+        try:
+            cursor.execute('SELECT 1 FROM authors LIMIT 1')
+        except sqlite3.OperationalError:
+            # Tables don't exist, migrate author data
+            logging.info("Migrating author data to new schema...")
+            
+            # First, create the authors table
+            cursor.execute('''
+            CREATE TABLE authors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            )
+            ''')
+            
+            # Create article_authors junction table
+            cursor.execute('''
+            CREATE TABLE article_authors (
+                article_id INTEGER NOT NULL,
+                author_id INTEGER NOT NULL,
+                author_position INTEGER,
+                PRIMARY KEY (article_id, author_id),
+                FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE CASCADE,
+                FOREIGN KEY (author_id) REFERENCES authors (id)
+            )
+            ''')
+            
+            # Migrate existing author data
+            cursor.execute('SELECT id, author FROM articles WHERE author IS NOT NULL AND author != ""')
+            author_data = cursor.fetchall()
+            
+            for article in author_data:
+                article_id = article['id']
+                author_str = article['author']
+                
+                # Split multi-author strings
+                author_names = []
+                if ',' in author_str or ' and ' in author_str or ';' in author_str:
+                    author_names = re.split(r',|\sand\s|;', author_str)
+                    author_names = [name.strip() for name in author_names if name.strip()]
+                else:
+                    author_names = [author_str.strip()]
+                
+                for i, author_name in enumerate(author_names):
+                    # Add author if doesn't exist
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO authors (name) VALUES (?)',
+                        (author_name,)
+                    )
+                    
+                    # Get author ID
+                    cursor.execute(
+                        'SELECT id FROM authors WHERE name = ?',
+                        (author_name,)
+                    )
+                    author_id = cursor.fetchone()['id']
+                    
+                    # Link author to article
+                    cursor.execute(
+                        'INSERT OR IGNORE INTO article_authors (article_id, author_id, author_position) VALUES (?, ?, ?)',
+                        (article_id, author_id, i)
+                    )
+            
+            # Create indices for performance
+            cursor.execute('CREATE INDEX idx_article_authors_article_id ON article_authors (article_id)')
+            cursor.execute('CREATE INDEX idx_article_authors_author_id ON article_authors (author_id)')
+        
+        # Check if categories and article_categories tables exist
+        try:
+            cursor.execute('SELECT 1 FROM categories LIMIT 1')
+        except sqlite3.OperationalError:
+            # Tables don't exist, create them
+            logging.info("Creating categories tables...")
+            
+            # Create categories table
+            cursor.execute('''
+            CREATE TABLE categories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            )
+            ''')
+            
+            # Create article_categories junction table
+            cursor.execute('''
+            CREATE TABLE article_categories (
+                article_id INTEGER NOT NULL,
+                category_id INTEGER NOT NULL,
+                PRIMARY KEY (article_id, category_id),
+                FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE CASCADE,
+                FOREIGN KEY (category_id) REFERENCES categories (id)
+            )
+            ''')
+            
+            # Create indices for performance
+            cursor.execute('CREATE INDEX idx_article_categories_article_id ON article_categories (article_id)')
+            cursor.execute('CREATE INDEX idx_article_categories_category_id ON article_categories (category_id)')
+        
+        # Add ON DELETE CASCADE to foreign keys if needed
+        try:
+            cursor.execute('PRAGMA foreign_key_list(user_feedback)')
+            fk_list = cursor.fetchall()
+            needs_migration = True
+            for fk in fk_list:
+                if fk['table'] == 'articles' and fk['on_delete'] == 'CASCADE':
+                    needs_migration = False
+                    break
+            
+            if needs_migration:
+                logging.info("Updating foreign key constraints...")
+                # Create temporary table with correct constraints
+                cursor.execute('''
+                CREATE TABLE user_feedback_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    article_id INTEGER NOT NULL,
+                    user_id TEXT,
+                    feedback INTEGER NOT NULL,
+                    clicked BOOLEAN DEFAULT 0,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE CASCADE
+                )
+                ''')
+                
+                # Copy data to new table
+                cursor.execute('INSERT INTO user_feedback_new SELECT id, article_id, NULL, feedback, clicked, timestamp FROM user_feedback')
+                
+                # Drop old table and rename new one
+                cursor.execute('DROP TABLE user_feedback')
+                cursor.execute('ALTER TABLE user_feedback_new RENAME TO user_feedback')
+                
+                # Recreate indices
+                cursor.execute('CREATE INDEX idx_user_feedback_article_id ON user_feedback (article_id)')
+                cursor.execute('CREATE INDEX idx_user_feedback_article_clicked ON user_feedback (article_id, clicked)')
+        except:
+            # If there was an error, we'll assume this is a new database or the table doesn't exist yet
+            pass
+        
+        conn.commit()
 
     def add_feed(self, url: str) -> Tuple[bool, str]:
         """
@@ -323,11 +664,23 @@ class RSSBackend:
                 
             feed_info = feed_data.feed
             
+            # Detect feed format
+            feed_format = "Unknown"
+            if hasattr(feed_data, 'version'):
+                feed_format = feed_data.version
+            elif hasattr(feed_info, 'xmlns'):
+                if 'atom' in feed_info.xmlns:
+                    feed_format = "Atom"
+                elif 'rdf' in feed_info.xmlns:
+                    feed_format = "RDF"
+                elif 'rss' in feed_info.xmlns:
+                    feed_format = "RSS"
+            
             with closing(self.get_db_connection()) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    'INSERT INTO feeds (title, url, description) VALUES (?, ?, ?)',
-                    (feed_info.get('title', 'Unknown'), url, feed_info.get('description', ''))
+                    'INSERT INTO feeds (title, url, description, feed_format) VALUES (?, ?, ?, ?)',
+                    (feed_info.get('title', 'Unknown'), url, feed_info.get('description', ''), feed_format)
                 )
                 conn.commit()
                 
@@ -365,6 +718,54 @@ class RSSBackend:
             if current_time - last_fetched > update_frequency:
                 self.fetch_feed_articles(feed['url'])    
 
+    def _add_or_get_author(self, conn, author_name: str) -> int:
+        """
+        Add an author to the database if they don't exist, otherwise return their ID.
+        
+        Args:
+            conn: Database connection
+            author_name: Name of the author
+            
+        Returns:
+            int: ID of the author
+        """
+        cursor = conn.cursor()
+        
+        # First try to get the author ID
+        cursor.execute('SELECT id FROM authors WHERE name = ?', (author_name,))
+        result = cursor.fetchone()
+        
+        if result:
+            return result['id']
+        
+        # If author doesn't exist, add them
+        cursor.execute('INSERT INTO authors (name) VALUES (?)', (author_name,))
+        return cursor.lastrowid
+    
+    def _add_or_get_category(self, conn, category_name: str) -> int:
+        """
+        Add a category to the database if it doesn't exist, otherwise return its ID.
+        
+        Args:
+            conn: Database connection
+            category_name: Name of the category
+            
+        Returns:
+            int: ID of the category
+        """
+        cursor = conn.cursor()
+        
+        # First try to get the category ID
+        cursor.execute('SELECT id FROM categories WHERE name = ?', (category_name,))
+        result = cursor.fetchone()
+        
+        if result:
+            return result['id']
+        
+        # If category doesn't exist, add it
+        cursor.execute('INSERT INTO categories (name) VALUES (?)', (category_name,))
+        return cursor.lastrowid
+
     def fetch_feed_articles(self, feed_url: str) -> int:
         """
         Fetch and store articles from a specific feed.
@@ -398,6 +799,23 @@ class RSSBackend:
             
             new_article_count = 0
             
+            # Update feed format if we can determine it
+            feed_format = "Unknown"
+            if hasattr(feed_data, 'version'):
+                feed_format = feed_data.version
+            elif hasattr(feed_data.feed, 'xmlns'):
+                if 'atom' in feed_data.feed.xmlns:
+                    feed_format = "Atom"
+                elif 'rdf' in feed_data.feed.xmlns:
+                    feed_format = "RDF"
+                elif 'rss' in feed_data.feed.xmlns:
+                    feed_format = "RSS"
+            
+            with closing(self.get_db_connection()) as conn:
+                cursor = conn.cursor()
+                cursor.execute('UPDATE feeds SET feed_format = ? WHERE id = ?', (feed_format, feed_id))
+                conn.commit()
+            
             # Get feed title for updating if needed
             if hasattr(feed_data, 'feed') and hasattr(feed_data.feed, 'title'):
                 with closing(self.get_db_connection()) as conn:
@@ -406,9 +824,12 @@ class RSSBackend:
                                 (feed_data.feed.title, feed_id))
                     conn.commit()
             
+            # Check if we should store raw data for debugging
+            store_raw_data = self.get_bool_setting('store_raw_data', False)
+            
             for entry in feed_data.entries:
                 # Extract GUID or generate one
-                guid = generate_guid(entry)
+                guid = entry.get('id', None) or generate_guid(entry)
                 
                 # Extract publication date
                 published_at = extract_published_date(entry)
@@ -435,13 +856,36 @@ class RSSBackend:
                     # Use a truncated version of content if no summary
                     summary = content[:500] + ('...' if len(content) > 500 else '')
                 
-                # Extract author with fallbacks
-                author = entry.get('author', '')
-                if not author and hasattr(entry, 'authors') and entry.authors:
-                    author = entry.authors[0].name if hasattr(entry.authors[0], 'name') else ''
+                # Extract authors
+                authors = extract_authors(entry)
+                
+                # Extract categories
+                categories = extract_categories(entry)
                 
                 # Extract image URL
                 image_url = extract_image_url(entry)
+                
+                # Extract DOI if available
+                doi = extract_doi(entry)
+                
+                # Extract language if available
+                language = None
+                if hasattr(entry, 'language'):
+                    language = entry.language
+                elif hasattr(feed_data.feed, 'language'):
+                    language = feed_data.feed.language
+                
+                # Extract credit if available
+                credit = None
+                if hasattr(entry, 'credit'):
+                    credit = entry.credit
+                elif hasattr(entry, 'author'):
+                    credit = entry.author
+                
+                # Raw data for debugging
+                raw_data = None
+                if store_raw_data:
+                    raw_data = json.dumps(entry)
                 
                 article = {
                     'feed_id': feed_id,
@@ -450,18 +894,24 @@ class RSSBackend:
                     'url': link,
                     'description': summary,
                     'content': content,
-                    'author': author,
                     'image_url': image_url,
-                    'published_at': published_at
+                    'published_at': published_at,
+                    'doi': doi,
+                    'language': language,
+                    'credit': credit,
+                    'raw_data': raw_data,
+                    'authors': authors,
+                    'categories': categories
                 }
                 
                 try:
                     with closing(self.get_db_connection()) as conn:
+                        conn.execute('BEGIN TRANSACTION')
                         cursor = conn.cursor()
                         cursor.execute('''
                             INSERT INTO articles 
-                            (feed_id, guid, title, url, description, content, author, image_url, published_at) 
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            (feed_id, guid, title, url, description, content, image_url, published_at, doi, language, credit, raw_data) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ''', (
                                 article['feed_id'], 
                                 article['guid'], 
@@ -469,23 +919,80 @@ class RSSBackend:
                                 article['url'], 
                                 article['description'], 
                                 article['content'], 
-                                article['author'],
                                 article['image_url'],
-                                article['published_at']
+                                article['published_at'],
+                                article['doi'],
+                                article['language'],
+                                article['credit'],
+                                article['raw_data']
                             )
                         )
+                        
+                        article_id = cursor.lastrowid
+                        
+                        # Add authors
+                        for i, author_name in enumerate(article['authors']):
+                            author_id = self._add_or_get_author(conn, author_name)
+                            cursor.execute(
+                                'INSERT OR IGNORE INTO article_authors (article_id, author_id, author_position) VALUES (?, ?, ?)',
+                                (article_id, author_id, i)
+                            )
+                        
+                        # Add categories
+                        for category_name in article['categories']:
+                            category_id = self._add_or_get_category(conn, category_name)
+                            cursor.execute(
+                                'INSERT OR IGNORE INTO article_categories (article_id, category_id) VALUES (?, ?)',
+                                (article_id, category_id)
+                            )
+                        
                         conn.commit()
                         new_article_count += 1
                 except sqlite3.IntegrityError:
                     # Article already exists, check if we need to update the image_url
-                    if image_url:
-                        with closing(self.get_db_connection()) as conn:
-                            cursor = conn.cursor()
-                            cursor.execute('''
-                                UPDATE articles SET image_url = ?
-                                WHERE guid = ? AND (image_url IS NULL OR image_url = '')
-                                ''', (image_url, guid))
+                    with closing(self.get_db_connection()) as conn:
+                        cursor = conn.cursor()
+                        
+                        # Get article ID
+                        cursor.execute('SELECT id FROM articles WHERE guid = ?', (guid,))
+                        result = cursor.fetchone()
+                        
+                        if result:
+                            article_id = result['id']
+                            
+                            # Update image_url if needed
+                            if image_url:
+                                cursor.execute('''
+                                    UPDATE articles SET image_url = ?
+                                    WHERE guid = ? AND (image_url IS NULL OR image_url = '')
+                                    ''', (image_url, guid))
+                            
+                            # Update DOI if needed
+                            if doi:
+                                cursor.execute('''
+                                    UPDATE articles SET doi = ?
+                                    WHERE guid = ? AND (doi IS NULL OR doi = '')
+                                    ''', (doi, guid))
+                            
+                            # Add any new authors
+                            for i, author_name in enumerate(article['authors']):
+                                author_id = self._add_or_get_author(conn, author_name)
+                                cursor.execute(
+                                    'INSERT OR IGNORE INTO article_authors (article_id, author_id, author_position) VALUES (?, ?, ?)',
+                                    (article_id, author_id, i)
+                                )
+                            
+                            # Add any new categories
+                            for category_name in article['categories']:
+                                category_id = self._add_or_get_category(conn, category_name)
+                                cursor.execute(
+                                    'INSERT OR IGNORE INTO article_categories (article_id, category_id) VALUES (?, ?)',
+                                    (article_id, category_id)
+                                )
+                            
                             conn.commit()
+                except Exception as e:
+                    logger.error(f"Error inserting article {title}: {str(e)}")
                 
             logger.info(f"Added {new_article_count} new articles from {feed_url}")
             return new_article_count
@@ -526,25 +1033,56 @@ class RSSBackend:
                     feed_id: Optional[int] = None, 
                     read: Optional[bool] = None,
                     sort_by: str = "published_at",
-                    sort_order: str = "DESC") -> List[Dict[str, Any]]:
+                    sort_order: str = "DESC",
+                    author_id: Optional[int] = None,
+                    category_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Get articles with filtering and sorting options.
+        
+        Args:
+            limit: Maximum number of articles to return
+            offset: Pagination offset
+            feed_id: Filter by feed ID
+            read: Filter by read status
+            sort_by: Field to sort by
+            sort_order: Sort direction (ASC/DESC)
+            author_id: Filter by author ID
+            category_id: Filter by category ID
+            
+        Returns:
+            List of article dictionaries
         """
-        query = '''
+        base_query = '''
             SELECT a.*, f.title as feed_title 
             FROM articles a
             JOIN feeds f ON a.feed_id = f.id
-            WHERE 1=1
         '''
+        
+        # Build the WHERE clause
+        where_clauses = []
         params = []
         
         if feed_id is not None:
-            query += " AND a.feed_id = ?"
+            where_clauses.append("a.feed_id = ?")
             params.append(feed_id)
         
         if read is not None:
-            query += " AND a.read = ?"
+            where_clauses.append("a.read = ?")
             params.append(1 if read else 0)
+        
+        if author_id is not None:
+            base_query += " JOIN article_authors aa ON a.id = aa.article_id"
+            where_clauses.append("aa.author_id = ?")
+            params.append(author_id)
+        
+        if category_id is not None:
+            base_query += " JOIN article_categories ac ON a.id = ac.article_id"
+            where_clauses.append("ac.category_id = ?")
+            params.append(category_id)
+        
+        # Add the WHERE clause if we have conditions
+        if where_clauses:
+            base_query += " WHERE " + " AND ".join(where_clauses)
         
         # Validate sort_by to prevent SQL injection
         valid_sort_columns = ["published_at", "fetched_at", "title"]
@@ -554,15 +1092,125 @@ class RSSBackend:
         # Validate sort_order to prevent SQL injection
         sort_order = "DESC" if sort_order.upper() == "DESC" else "ASC"
         
-        query += f" ORDER BY a.{sort_by} {sort_order}"
-        query += " LIMIT ? OFFSET ?"
+        # Add GROUP BY to handle potential duplicates from joins
+        if author_id is not None or category_id is not None:
+            base_query += f" GROUP BY a.id"
+        
+        # Add the ORDER BY clause
+        base_query += f" ORDER BY a.{sort_by} {sort_order}"
+        
+        # Add the LIMIT clause
+        base_query += " LIMIT ? OFFSET ?"
         params.extend([limit, offset])
         
         with closing(self.get_db_connection()) as conn:
             cursor = conn.cursor()
-            cursor.execute(query, params)
+            cursor.execute(base_query, params)
             articles = [dict(article) for article in cursor.fetchall()]
+            
+            # Get authors and categories for each article
+            for article in articles:
+                article['authors'] = self.get_article_authors(article['id'])
+                article['categories'] = self.get_article_categories(article['id'])
+            
             return articles
+    
+    def get_article_authors(self, article_id: int) -> List[str]:
+        """
+        Get the authors of an article.
+        
+        Args:
+            article_id: ID of the article
+            
+        Returns:
+            List of author names
+        """
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT a.name
+                FROM authors a
+                JOIN article_authors aa ON a.id = aa.author_id
+                WHERE aa.article_id = ?
+                ORDER BY aa.author_position
+            ''', (article_id,))
+            return [row['name'] for row in cursor.fetchall()]
+    
+    def get_article_categories(self, article_id: int) -> List[str]:
+        """
+        Get the categories of an article.
+        
+        Args:
+            article_id: ID of the article
+            
+        Returns:
+            List of category names
+        """
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT c.name
+                FROM categories c
+                JOIN article_categories ac ON c.id = ac.category_id
+                WHERE ac.article_id = ?
+            ''', (article_id,))
+            return [row['name'] for row in cursor.fetchall()]
+    
+    def get_authors(self, search_term: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get all authors, optionally filtered by a search term.
+        
+        Args:
+            search_term: Optional search term to filter authors
+            
+        Returns:
+            List of author dictionaries with article counts
+        """
+        query = '''
+            SELECT a.id, a.name, COUNT(DISTINCT aa.article_id) as article_count
+            FROM authors a
+            LEFT JOIN article_authors aa ON a.id = aa.author_id
+        '''
+        
+        params = []
+        if search_term:
+            query += " WHERE a.name LIKE ?"
+            params.append(f"%{search_term}%")
+        
+        query += " GROUP BY a.id ORDER BY a.name"
+        
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_categories(self, search_term: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get all categories, optionally filtered by a search term.
+        
+        Args:
+            search_term: Optional search term to filter categories
+            
+        Returns:
+            List of category dictionaries with article counts
+        """
+        query = '''
+            SELECT c.id, c.name, COUNT(DISTINCT ac.article_id) as article_count
+            FROM categories c
+            LEFT JOIN article_categories ac ON c.id = ac.category_id
+        '''
+        
+        params = []
+        if search_term:
+            query += " WHERE c.name LIKE ?"
+            params.append(f"%{search_term}%")
+        
+        query += " GROUP BY c.id ORDER BY c.name"
+        
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
     
     def mark_article_read(self, article_id: int, read: bool = True) -> bool:
         """Mark an article as read or unread."""
@@ -579,8 +1227,18 @@ class RSSBackend:
             logger.error(f"Error marking article {article_id} as read={read}: {str(e)}")
             return False
     
-    def record_feedback(self, article_id: int, positive: bool) -> bool:
-        """Record user feedback for an article."""
+    def record_feedback(self, article_id: int, positive: bool, user_id: Optional[str] = None) -> bool:
+        """
+        Record user feedback for an article.
+        
+        Args:
+            article_id: ID of the article
+            positive: Whether the feedback is positive
+            user_id: Optional identifier for the user
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             with closing(self.get_db_connection()) as conn:
                 cursor = conn.cursor()
@@ -592,8 +1250,8 @@ class RSSBackend:
                     return False
                     
                 cursor.execute(
-                    'INSERT INTO user_feedback (article_id, feedback) VALUES (?, ?)',
-                    (article_id, 1 if positive else -1)
+                    'INSERT INTO user_feedback (article_id, feedback, user_id) VALUES (?, ?, ?)',
+                    (article_id, 1 if positive else -1, user_id)
                 )
                 conn.commit()
                 return True
@@ -609,13 +1267,23 @@ class RSSBackend:
                 cursor = conn.cursor()
                 
                 if delete_articles:
-                    # Delete all related user feedback first to maintain foreign key integrity
+                    # Delete article-related records
                     cursor.execute('''
                         DELETE FROM user_feedback 
                         WHERE article_id IN (SELECT id FROM articles WHERE feed_id = ?)
                     ''', (feed_id,))
                     
-                    # Then delete all articles
+                    cursor.execute('''
+                        DELETE FROM article_authors
+                        WHERE article_id IN (SELECT id FROM articles WHERE feed_id = ?)
+                    ''', (feed_id,))
+                    
+                    cursor.execute('''
+                        DELETE FROM article_categories
+                        WHERE article_id IN (SELECT id FROM articles WHERE feed_id = ?)
+                    ''', (feed_id,))
+                    
+                    # Delete the articles
                     cursor.execute('DELETE FROM articles WHERE feed_id = ?', (feed_id,))
                 
                 # Delete the feed
@@ -656,10 +1324,27 @@ class RSSBackend:
             )
             stats['new_articles_24h'] = cursor.fetchone()[0]
             
+            # Get author count
+            cursor.execute('SELECT COUNT(*) FROM authors')
+            stats['total_authors'] = cursor.fetchone()[0]
+            
+            # Get category count
+            cursor.execute('SELECT COUNT(*) FROM categories')
+            stats['total_categories'] = cursor.fetchone()[0]
+            
             return stats
 
-    def record_click(self, article_id: int) -> bool:
-        """Record when a user clicks on an article link."""
+    def record_click(self, article_id: int, user_id: Optional[str] = None) -> bool:
+        """
+        Record when a user clicks on an article link.
+        
+        Args:
+            article_id: ID of the article
+            user_id: Optional identifier for the user
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
         try:
             with closing(self.get_db_connection()) as conn:
                 cursor = conn.cursor()
@@ -670,11 +1355,18 @@ class RSSBackend:
                     logger.warning(f"Attempted to record click for non-existent article ID: {article_id}")
                     return False
                 
-                # Check if there's already a feedback record for this article
-                cursor.execute(
-                    'SELECT id FROM user_feedback WHERE article_id = ? LIMIT 1',
-                    (article_id,)
-                )
+                # Check if there's already a feedback record for this article and user
+                if user_id:
+                    cursor.execute(
+                        'SELECT id FROM user_feedback WHERE article_id = ? AND user_id = ? LIMIT 1',
+                        (article_id, user_id)
+                    )
+                else:
+                    cursor.execute(
+                        'SELECT id FROM user_feedback WHERE article_id = ? LIMIT 1',
+                        (article_id,)
+                    )
+                
                 existing = cursor.fetchone()
                 
                 if existing:
@@ -686,8 +1378,8 @@ class RSSBackend:
                 else:
                     # Insert new record
                     cursor.execute(
-                        'INSERT INTO user_feedback (article_id, feedback, clicked) VALUES (?, 0, 1)',
-                        (article_id,)
+                        'INSERT INTO user_feedback (article_id, feedback, clicked, user_id) VALUES (?, 0, 1, ?)',
+                        (article_id, user_id)
                     )
                 
                 conn.commit()
@@ -720,6 +1412,94 @@ class RSSBackend:
             
             interactions = [dict(row) for row in cursor.fetchall()]
             return interactions
+    
+    def get_author_interactions(self, author_id: int) -> Dict[str, Any]:
+        """
+        Get interaction statistics for articles by a specific author.
+        
+        Args:
+            author_id: ID of the author
+            
+        Returns:
+            Dictionary with interaction statistics
+        """
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            
+            # Get total article count for this author
+            cursor.execute('''
+                SELECT COUNT(DISTINCT aa.article_id) 
+                FROM article_authors aa 
+                WHERE aa.author_id = ?
+            ''', (author_id,))
+            total_articles = cursor.fetchone()[0]
+            
+            # Get interaction statistics
+            cursor.execute('''
+                SELECT 
+                    COUNT(DISTINCT a.id) as total_articles,
+                    SUM(CASE WHEN a.read = 1 THEN 1 ELSE 0 END) as read_count,
+                    COUNT(DISTINCT CASE WHEN uf.feedback = 1 THEN a.id END) as positive_feedback,
+                    COUNT(DISTINCT CASE WHEN uf.feedback = -1 THEN a.id END) as negative_feedback,
+                    COUNT(DISTINCT CASE WHEN uf.clicked = 1 THEN a.id END) as click_count
+                FROM 
+                    authors auth
+                JOIN 
+                    article_authors aa ON auth.id = aa.author_id
+                JOIN 
+                    articles a ON aa.article_id = a.id
+                LEFT JOIN 
+                    user_feedback uf ON a.id = uf.article_id
+                WHERE 
+                    auth.id = ?
+            ''', (author_id,))
+            
+            stats = dict(cursor.fetchone())
+            
+            # Get the most read categories for this author's articles
+            cursor.execute('''
+                SELECT 
+                    c.name, 
+                    COUNT(DISTINCT a.id) as article_count
+                FROM 
+                    categories c
+                JOIN 
+                    article_categories ac ON c.id = ac.category_id
+                JOIN 
+                    articles a ON ac.article_id = a.id
+                JOIN 
+                    article_authors aa ON a.id = aa.article_id
+                WHERE 
+                    aa.author_id = ?
+                GROUP BY 
+                    c.id
+                ORDER BY 
+                    article_count DESC
+                LIMIT 5
+            ''', (author_id,))
+            
+            stats['top_categories'] = [dict(row) for row in cursor.fetchall()]
+            
+            # Get recent articles
+            cursor.execute('''
+                SELECT 
+                    a.id, a.title, a.url, a.published_at, f.title as feed_title
+                FROM 
+                    articles a
+                JOIN 
+                    article_authors aa ON a.id = aa.article_id
+                JOIN 
+                    feeds f ON a.feed_id = f.id
+                WHERE 
+                    aa.author_id = ?
+                ORDER BY 
+                    a.published_at DESC
+                LIMIT 5
+            ''', (author_id,))
+            
+            stats['recent_articles'] = [dict(row) for row in cursor.fetchall()]
+            
+            return stats
 
     def get_setting(self, key, default=None):
         """
@@ -842,3 +1622,7 @@ if __name__ == "__main__":
     articles = rss.get_articles(limit=10)
     for article in articles:
         print(f"{article['feed_title']}: {article['title']}")
+        if article['authors']:
+            print(f"  Authors: {', '.join(article['authors'])}")
+        if article['categories']:
+            print(f"  Categories: {', '.join(article['categories'])}")

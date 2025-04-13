@@ -1,4 +1,4 @@
-/**
+    /**
  * Feed manager handles displaying and interacting with articles
  */
 const FeedManager = {
@@ -35,14 +35,8 @@ const FeedManager = {
         this.unreadFilterCheckbox = document.getElementById('unread-filter');
         this.autoReadSetting = document.getElementById('auto-read-setting');
         
-        // Load auto-read preference from localStorage
-        const savedAutoReadPref = localStorage.getItem('autoReadEnabled');
-        if (savedAutoReadPref !== null) {
-            this.autoReadEnabled = savedAutoReadPref === 'true';
-            if (this.autoReadSetting) {
-                this.autoReadSetting.checked = this.autoReadEnabled;
-            }
-        }
+        // Load auto-read setting from server (with localStorage fallback for compatibility)
+        this.loadAutoReadSetting();
         
         // Add event listeners
         this.loadMoreButton.addEventListener('click', () => this.loadMoreArticles());
@@ -53,7 +47,10 @@ const FeedManager = {
         if (this.autoReadSetting) {
             this.autoReadSetting.addEventListener('change', () => {
                 this.autoReadEnabled = this.autoReadSetting.checked;
-                localStorage.setItem('autoReadEnabled', this.autoReadEnabled);
+                
+                // Save to server
+                API.updateSetting('auto_read', this.autoReadEnabled ? 'true' : 'false')
+                    .catch(error => console.error('Error saving auto-read setting:', error));
                 
                 if (this.autoReadEnabled) {
                     this.setupAutoReadTracking();
@@ -67,16 +64,45 @@ const FeedManager = {
         // Set up intersection observer for lazy loading
         this.setupLazyLoading();
         
-        // Set up auto-read tracking if enabled
-        if (this.autoReadEnabled) {
-            this.setupAutoReadTracking();
-        }
+        // Set up auto-read tracking if enabled (will be done after loading setting)
         
         // Load feeds for the filter dropdown
         this.loadFeedsForFilter();
         
         // Load initial articles
         this.loadArticles();
+    },
+    
+    /**
+     * Load auto-read setting from server
+     */
+    async loadAutoReadSetting() {
+        try {
+            // Try to get the setting from the server
+            const response = await API.getSetting('auto_read');
+            this.autoReadEnabled = response.value === 'true';
+        } catch (error) {
+            console.error('Error loading auto-read setting, using fallback:', error);
+            // Fallback to localStorage for compatibility with existing users
+            const savedAutoReadPref = localStorage.getItem('autoReadEnabled');
+            if (savedAutoReadPref !== null) {
+                this.autoReadEnabled = savedAutoReadPref === 'true';
+                
+                // Save this to the server for future use
+                API.updateSetting('auto_read', this.autoReadEnabled ? 'true' : 'false')
+                    .catch(error => console.error('Error saving auto-read fallback setting:', error));
+            }
+        } finally {
+            // Update the UI checkbox
+            if (this.autoReadSetting) {
+                this.autoReadSetting.checked = this.autoReadEnabled;
+            }
+            
+            // Set up auto-read tracking if enabled
+            if (this.autoReadEnabled) {
+                this.setupAutoReadTracking();
+            }
+        }
     },
     
     /**

@@ -403,103 +403,106 @@ const SettingsManager = {
      * @param {Object} settings - Settings data
      */
     renderSettingsForm(settings) {
-        // Clear previous content
-        this.appSettingsContainer.innerHTML = '';
-        
-        // Create the form
-        const form = document.createElement('form');
-        form.id = 'app-settings-form';
-        form.className = 'settings-form';
-        
-        // Settings groups and fields
-        const settingsGroups = {
-            'Feed Settings': [
-                { key: 'update_interval', 
-                  label: 'Update Interval (seconds)', 
-                  type: 'number', 
-                  min: 60, 
-                  step: 60 },
-                { key: 'max_articles_per_feed', 
-                  label: 'Max Articles per Feed', 
-                  type: 'number', 
-                  min: 10, 
-                  max: 1000 },
-                { key: 'auto_cleanup_days', 
-                  label: 'Auto Cleanup (days)', 
-                  type: 'number', 
-                  min: 1, 
-                  max: 365 }
-            ],
-            'AI Settings': [
-                { key: 'ai_enabled', 
-                  label: 'Enable AI Ranking', 
-                  type: 'checkbox' },
-                { key: 'half_time', 
-                  label: 'Feedback Half-life (seconds)', 
-                  type: 'number', 
-                  min: 3600 },
-                { key: 'min_feedback_for_training', 
-                  label: 'Min Feedback for Training', 
-                  type: 'number', 
-                  min: 1 },
-                { key: 'embedding_batch_size', 
-                  label: 'Embedding Batch Size', 
-                  type: 'number', 
-                  min: 1, 
-                  max: 50 }
-            ]
-        };
-        
-        // Generate form fields grouped by category
-        Object.entries(settingsGroups).forEach(([groupName, fields]) => {
-            const fieldset = document.createElement('fieldset');
-            
-            // Add group heading
-            const legend = document.createElement('legend');
-            legend.textContent = groupName;
-            fieldset.appendChild(legend);
-            
-            // Add each field in this group
-            fields.forEach(field => {
-                const setting = settings[field.key] || { value: '', description: '' };
-                const formGroup = this.createFormField(field, setting);
-                fieldset.appendChild(formGroup);
-            });
-            
-            form.appendChild(fieldset);
-        });
-        
-        // Add submit button
-        const submitGroup = document.createElement('div');
-        submitGroup.className = 'form-submit';
-        
-        const submitButton = document.createElement('button');
-        submitButton.type = 'submit';
-        submitButton.className = 'primary-button';
-        submitButton.id = 'save-settings-button';
-        submitButton.textContent = 'Save Settings';
-        
-        const resultDiv = document.createElement('div');
-        resultDiv.className = 'form-result';
-        resultDiv.id = 'settings-save-result';
-        
-        submitGroup.appendChild(submitButton);
-        submitGroup.appendChild(resultDiv);
-        form.appendChild(submitGroup);
-        
-        // Add form to container
-        this.appSettingsContainer.appendChild(form);
-        
-        // Update local references
-        this.appSettingsForm = form;
-        this.saveSettingsButton = submitButton;
-        this.settingsSaveResult = resultDiv;
-        
-        // Add event listener
-        this.appSettingsForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.saveSettings();
-        });
+      // Clear previous content
+      this.appSettingsContainer.innerHTML = '';
+      
+      // Create the form
+      const form = document.createElement('form');
+      form.id = 'app-settings-form';
+      form.className = 'settings-form';
+      
+      // Settings groups and fields
+      const settingsGroups = {
+          'Feed Settings': [
+              { key: 'update_interval', 
+                label: 'Update Interval (seconds)', 
+                type: 'number', 
+                min: 60, 
+                step: 60 },
+              { key: 'max_articles_per_feed', 
+                label: 'Max Articles per Feed', 
+                type: 'number', 
+                min: 10, 
+                max: 1000 },
+              { key: 'auto_cleanup_days', 
+                label: 'Auto Cleanup (days)', 
+                type: 'number', 
+                min: 1, 
+                max: 365 },
+              { key: 'auto_read', 
+                label: 'Auto-mark articles as read when scrolled past', 
+                type: 'checkbox' }
+          ],
+          'AI Settings': [
+              { key: 'ai_enabled', 
+                label: 'Enable AI Ranking', 
+                type: 'checkbox' },
+              { key: 'half_time', 
+                label: 'Feedback Half-life (seconds)', 
+                type: 'number', 
+                min: 3600 },
+              { key: 'min_feedback_for_training', 
+                label: 'Min Feedback for Training', 
+                type: 'number', 
+                min: 1 },
+              { key: 'embedding_batch_size', 
+                label: 'Embedding Batch Size', 
+                type: 'number', 
+                min: 1, 
+                max: 50 }
+          ]
+      };
+      
+      // Generate form fields grouped by category
+      Object.entries(settingsGroups).forEach(([groupName, fields]) => {
+          const fieldset = document.createElement('fieldset');
+          
+          // Add group heading
+          const legend = document.createElement('legend');
+          legend.textContent = groupName;
+          fieldset.appendChild(legend);
+          
+          // Add each field in this group
+          fields.forEach(field => {
+              const setting = settings[field.key] || { value: '', description: '' };
+              const formGroup = this.createFormField(field, setting);
+              fieldset.appendChild(formGroup);
+          });
+          
+          form.appendChild(fieldset);
+      });
+      
+      // Add submit button
+      const submitGroup = document.createElement('div');
+      submitGroup.className = 'form-submit';
+      
+      const submitButton = document.createElement('button');
+      submitButton.type = 'submit';
+      submitButton.className = 'primary-button';
+      submitButton.id = 'save-settings-button';
+      submitButton.textContent = 'Save Settings';
+      
+      const resultDiv = document.createElement('div');
+      resultDiv.className = 'form-result';
+      resultDiv.id = 'settings-save-result';
+      
+      submitGroup.appendChild(submitButton);
+      submitGroup.appendChild(resultDiv);
+      form.appendChild(submitGroup);
+      
+      // Add form to container
+      this.appSettingsContainer.appendChild(form);
+      
+      // Update local references
+      this.appSettingsForm = form;
+      this.saveSettingsButton = submitButton;
+      this.settingsSaveResult = resultDiv;
+      
+      // Add event listener
+      this.appSettingsForm.addEventListener('submit', (e) => {
+          e.preventDefault();
+          this.saveSettings();
+      });
     },
     
     /**
