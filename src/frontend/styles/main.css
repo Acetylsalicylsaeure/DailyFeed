@@ -646,5 +646,3 @@ input[type="number"]::-webkit-outer-spin-button {
     line-height: 1.4;
 }
 
-/* Import article image styles at the end of main.css */
-@import url('styles/article-images.css');

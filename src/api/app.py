@@ -246,6 +246,62 @@ def update_setting(key):
         return jsonify({"error": f"Failed to update setting '{key}'"}), 500
 
 
+@app.route('/api/articles/<int:article_id>/similar', methods=['GET'])
+def get_similar_articles(article_id):
+    """Get articles similar to the specified article."""
+    rss = get_rss_backend()
+    
+    # Get limit from query parameter
+    limit = int(request.args.get('limit', 5))
+    
+    # Get similar articles
+    similar_articles_ids = rss.find_similar_articles(article_id, limit)
+    
+    if not similar_articles_ids:
+        return jsonify([])
+    
+    # Get full article data for the similar articles
+    articles = []
+    for item in similar_articles_ids:
+        article_data = rss.get_article_by_id(item['article_id'])
+        if article_data:
+            # Add similarity score
+            article_data['similarity'] = item['similarity']
+            articles.append(article_data)
+    
+    return jsonify(articles)
+
+@app.route('/api/embeddings/backfill', methods=['POST'])
+def backfill_embeddings():
+    """Backfill embeddings for all articles that don't have them yet."""
+    rss = get_rss_backend()
+    
+    # Get batch size from query parameter or use default
+    batch_size = int(request.args.get('batch_size', 50))
+    
+    # Set AI enabled to true temporarily if needed
+    old_setting = rss.get_bool_setting('ai_enabled', False)
+    if not old_setting:
+        rss.update_setting('ai_enabled', 'true')
+    
+    # Process in a loop until no more articles need embeddings
+    total_processed = 0
+    while True:
+        processed = rss.process_pending_embeddings(batch_size)
+        if processed == 0:
+            break
+        total_processed += processed
+    
+    # Restore original setting if we changed it
+    if not old_setting:
+        rss.update_setting('ai_enabled', 'false')
+    
+    return jsonify({
+        "success": True,
+        "total_processed": total_processed,
+        "message": f"Successfully processed embeddings for {total_processed} articles"
+    })
+
 if __name__ == '__main__':
     # Start the Flask app
     port = int(os.environ.get('PORT', 5000))

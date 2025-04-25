@@ -186,5 +186,15 @@ const API = {
             method: 'PUT',
             body: JSON.stringify(data)
         });
-    }
+    },
+    
+    /**
+     * Get articles similar to the specified article
+     * @param {number} articleId - Article ID
+     * @param {number} limit - Maximum number of similar articles to return
+     * @returns {Promise<Array>} - Similar articles array
+     */
+    async getSimilarArticles(articleId, limit = 5) {
+        return this.request(`/articles/${articleId}/similar?limit=${limit}`);
+    },
 };

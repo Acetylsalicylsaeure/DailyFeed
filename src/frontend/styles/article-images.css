@@ -1,12 +1,46 @@
 /* Article Image Styles */
 .article-image {
-    max-width: 100%;
-    height: auto;
-    object-fit: contain;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
     border-radius: var(--border-radius-md);
+    max-width: 100%; /* Ensure image doesn't exceed container width */
 }
 
-/* Position image on the right side */
+/* --- Fix layout for article card --- */
+/* Make the article card a positioning context */
+.article-card {
+    position: relative;
+    overflow: hidden; /* Prevent any content from overflowing */
+}
+
+/* Ensure proper content layout regardless of structure */
+.article-content {
+    display: flex;
+    flex-wrap: wrap; /* Allow wrapping if needed */
+    gap: var(--spacing-md);
+    position: relative; /* Create a positioning context */
+}
+
+/* Article summary container takes up available space */
+.article-summary-container {
+    flex: 1;
+    min-width: 0; /* Allow container to shrink below its content size */
+}
+
+/* Strict constraints for image container */
+.article-image-container {
+    overflow: hidden;
+    border-radius: var(--border-radius-md);
+    background-color: var(--color-border);
+    position: relative;
+    flex: 0 0 150px; /* Fixed width */
+    max-width: 150px;
+    height: 120px;
+    align-self: flex-start; /* Align to top */
+}
+
+/* Special layout for cards with images */
 .article-card.has-image .article-content {
     display: flex;
     flex-direction: row;
@@ -14,24 +48,11 @@
 }
 
 .article-card.has-image .article-image-container {
-    flex: 0 0 150px;
-    max-width: 150px;
-    height: 120px;
     order: 2; /* Put image on the right */
-    overflow: hidden; /* Prevent overflow */
 }
 
 .article-card.has-image .article-summary-container {
-    flex: 1;
     order: 1; /* Put summary on the left */
-    max-width: calc(100% - 150px - var(--spacing-md)); /* Account for image width and gap */
-}
-
-/* Handle images within summary */
-.article-summary img {
-    max-width: 100%;
-    height: auto;
-    object-fit: contain;
 }
 
 /* On very small screens, stack the image below */
@@ -40,7 +61,8 @@
         flex-direction: column;
     }
     
-    .article-card.has-image .article-image-container {
+    .article-card.has-image .article-image-container,
+    .article-image-container {
         max-width: 100%;
         height: 180px;
         order: 1; /* Put image on top on very small screens */
@@ -49,21 +71,7 @@
     
     .article-card.has-image .article-summary-container {
         order: 2; /* Put summary below on very small screens */
-        max-width: 100%; /* Full width on small screens */
     }
-}
-
-.article-image-container {
-    overflow: hidden;
-    border-radius: var(--border-radius-md);
-    background-color: var(--color-border);
-    position: relative;
-}
-
-/* Also constrain images in article content/summary */
-.article-summary-container img {
-    max-width: 100%;
-    height: auto;
 }
 
 /* Lazy loading animation */
@@ -79,4 +87,27 @@
 /* Hide image on error instead of showing an error message */
 .article-image-container.error {
     display: none;
+}
+
+/* Fix for images inside article summary */
+.article-summary img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: var(--spacing-xs) 0;
+}
+
+/* Ensure HTML tables don't overflow */
+.article-summary table {
+    max-width: 100%;
+    overflow-x: auto;
+    display: block;
+}
+
+/* Ensure iframes and embedded content doesn't overflow */
+.article-summary iframe,
+.article-summary embed,
+.article-summary object {
+    max-width: 100%;
+    max-height: 250px;
 }

@@ -409,6 +409,7 @@ class RSSBackend:
                 language TEXT,  -- Language of the article
                 credit TEXT,  -- Image/content credit
                 raw_data TEXT,  -- Store the original entry data for debugging
+                embedding BLOB,  -- Store embeddings as binary blob
                 FOREIGN KEY (feed_id) REFERENCES feeds (id)
             )
             ''')
@@ -482,11 +483,12 @@ class RSSBackend:
                 ('half_time', '86400', 'Feedback half-life in seconds (1 day)'),
                 ('max_articles_per_feed', '100', 'Maximum number of articles to keep per feed'),
                 ('embedding_batch_size', '10', 'Number of articles to process at once for embeddings'),
-                ('ai_enabled', 'false', 'Whether AI-powered ranking is enabled'),
+                ('ai_enabled', 'true', 'Whether AI-powered ranking is enabled'),
                 ('min_feedback_for_training', '10', 'Minimum feedback entries required before AI ranking is used'),
                 ('auto_cleanup_days', '30', 'Number of days to keep articles before cleanup'),
                 ('auto_read', 'true', 'Automatically mark articles as read when scrolled past'),
-                ('store_raw_data', 'false', 'Store raw entry data for debugging')
+                ('store_raw_data', 'false', 'Store raw entry data for debugging'),
+                ('embedding_batch_size', '32', 'Number of articles to process at once for embeddings'),
             ]
             
             for key, value, description in default_settings:
@@ -675,6 +677,13 @@ class RSSBackend:
         except:
             # If there was an error, we'll assume this is a new database or the table doesn't exist yet
             pass
+
+        try:
+            cursor.execute('SELECT embedding FROM articles LIMIT 1')
+        except sqlite3.OperationalError:
+            # Column doesn't exist, add it
+            cursor.execute('ALTER TABLE articles ADD COLUMN embedding BLOB')
+            logging.info(f"Added embedding column to articles table")
         
         conn.commit()
 
@@ -788,6 +797,7 @@ class RSSBackend:
         """Update all active feeds in the database."""
         # Get global update interval from settings (default 600 seconds = 10 minutes)
         global_update_interval = self.get_int_setting('update_interval', 600)
+        embedding_batch_size = self.get_int_setting('embedding_batch_size', 50)
         
         with closing(self.get_db_connection()) as conn:
             cursor = conn.cursor()
@@ -796,6 +806,7 @@ class RSSBackend:
             )
             feeds = cursor.fetchall()
             
+        total_new_articles = 0
         for feed in feeds:
             # Check if it's time to update this feed
             current_time = datetime.datetime.now().timestamp()
@@ -805,7 +816,15 @@ class RSSBackend:
             update_frequency = feed['update_frequency'] or global_update_interval
             
             if current_time - last_fetched > update_frequency:
-                self.fetch_feed_articles(feed['url'])    
+                new_articles = self.fetch_feed_articles(feed['url'])
+                total_new_articles += new_articles
+        
+        # Process embeddings for new articles
+        if total_new_articles > 0:
+            ai_enabled = self.get_bool_setting('ai_enabled', False)
+            if ai_enabled:
+                logger.info(f"Processing embeddings for newly fetched articles")
+                self.process_pending_embeddings(embedding_batch_size)
 
     def _add_or_get_author(self, conn, author_name: str) -> int:
         """
@@ -1199,6 +1218,8 @@ class RSSBackend:
             
             # Get authors and categories for each article
             for article in articles:
+                if 'embedding' in article:
+                    del article['embedding']
                 article['authors'] = self.get_article_authors(article['id'])
                 article['categories'] = self.get_article_categories(article['id'])
             
@@ -1694,6 +1715,185 @@ class RSSBackend:
                                'description': row['description'],
                                'updated_at': row['updated_at']} 
                     for row in cursor.fetchall()}
+
+
+    def process_pending_embeddings(self, batch_size=50):
+        """
+        Process embeddings for articles that don't have them yet.
+        Returns the number of articles processed.
+        """
+        try:
+            from src.backend.embedding_service import EmbeddingService
+            
+            with closing(self.get_db_connection()) as conn:
+                cursor = conn.cursor()
+                # Get articles without embeddings
+                cursor.execute('''
+                    SELECT id, title, description, content 
+                    FROM articles 
+                    WHERE embedding IS NULL
+                    LIMIT ?
+                ''', (batch_size,))
+                
+                articles = cursor.fetchall()
+                
+                if not articles:
+                    logger.info("No articles need embeddings")
+                    return 0
+                    
+                logger.info(f"Processing embeddings for {len(articles)} articles")
+                embedding_service = EmbeddingService()
+                
+                # Prepare texts (combine title and description/content)
+                texts = []
+                article_ids = []
+                for article in articles:
+                    article_ids.append(article['id'])
+                    
+                    # Concatenate title with content, limiting total length
+                    text = article['title']
+                    if article['description']:
+                        text += " " + article['description']
+                    elif article['content']:
+                        # Extract plain text from content (stripping HTML)
+                        content_text = embedding_service.extract_plain_text(article['content'])
+                        text += " " + content_text[:1000]  # Limit content length
+                        
+                    texts.append(text)
+                
+                # Generate embeddings
+                embeddings = embedding_service.generate_embeddings(texts)
+                
+                # Store embeddings in the database
+                for i, article_id in enumerate(article_ids):
+                    embedding_bytes = embeddings[i].tobytes()
+                    cursor.execute(
+                        'UPDATE articles SET embedding = ? WHERE id = ?',
+                        (embedding_bytes, article_id)
+                    )
+                
+                conn.commit()
+                logger.info(f"Successfully stored embeddings for {len(articles)} articles")
+                return len(articles)
+        except ImportError as e:
+            logger.warning(f"Embedding generation skipped: {str(e)}")
+            return 0
+        except Exception as e:
+            logger.error(f"Error processing embeddings: {str(e)}")
+            return 0
+
+    def get_article_embedding(self, article_id):
+        """
+        Get the embedding for a specific article.
+        Returns the embedding as a numpy array or None if not available.
+        """
+        try:
+            import numpy as np
+            
+            with closing(self.get_db_connection()) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT embedding FROM articles WHERE id = ?', (article_id,))
+                result = cursor.fetchone()
+                
+                if result and result['embedding']:
+                    # Convert BLOB back to numpy array
+                    return np.frombuffer(result['embedding'], dtype=np.float32)
+                
+                return None
+        except ImportError:
+            logger.warning("NumPy not available for embedding retrieval")
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving embedding: {str(e)}")
+            return None
+
+    def find_similar_articles(self, article_id, limit=5):
+        """
+        Find articles similar to the given article based on embedding similarity.
+        Returns a list of similar article IDs and their similarity scores.
+        """
+        try:
+            import numpy as np
+            
+            # Get the embedding for the source article
+            source_embedding = self.get_article_embedding(article_id)
+            if source_embedding is None:
+                return []
+            
+            similar_articles = []
+            
+            with closing(self.get_db_connection()) as conn:
+                cursor = conn.cursor()
+                
+                # Get source article info
+                cursor.execute('SELECT feed_id FROM articles WHERE id = ?', (article_id,))
+                source_info = cursor.fetchone()
+                if not source_info:
+                    return []
+                    
+                source_feed_id = source_info['feed_id']
+                
+                # Get all articles with embeddings
+                cursor.execute('''
+                    SELECT id, embedding FROM articles 
+                    WHERE embedding IS NOT NULL 
+                    AND id != ? 
+                    AND feed_id = ?
+                ''', (article_id, source_feed_id))
+                
+                articles = cursor.fetchall()
+                
+                # Calculate similarities
+                for article in articles:
+                    if article['embedding']:
+                        target_embedding = np.frombuffer(article['embedding'], dtype=np.float32)
+                        
+                        # Calculate cosine similarity
+                        similarity = np.dot(source_embedding, target_embedding) / (
+                            np.linalg.norm(source_embedding) * np.linalg.norm(target_embedding)
+                        )
+                        
+                        similar_articles.append({
+                            'article_id': article['id'],
+                            'similarity': float(similarity)
+                        })
+            
+            # Sort by similarity (highest first)
+            similar_articles.sort(key=lambda x: x['similarity'], reverse=True)
+            
+            # Return top N similar articles
+            return similar_articles[:limit]
+        except ImportError:
+            logger.warning("NumPy not available for similarity calculation")
+            return []
+        except Exception as e:
+            logger.error(f"Error finding similar articles: {str(e)}")
+            return []
+
+    def get_article_by_id(self, article_id):
+        """Get a single article by ID."""
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT a.*, f.title as feed_title 
+                FROM articles a
+                JOIN feeds f ON a.feed_id = f.id
+                WHERE a.id = ?
+            ''', (article_id,))
+            
+            article = cursor.fetchone()
+            if not article:
+                return None
+                
+            article_dict = dict(article)
+            
+            if 'embedding' in article_dict:
+                del article_dict['embedding']
+            # Get authors and categories
+            article_dict['authors'] = self.get_article_authors(article['id'])
+            article_dict['categories'] = self.get_article_categories(article['id'])
+            
+            return article_dict
 
 
 # Example usage
