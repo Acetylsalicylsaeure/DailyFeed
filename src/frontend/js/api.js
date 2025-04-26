@@ -197,4 +197,8 @@ const API = {
     async getSimilarArticles(articleId, limit = 5) {
         return this.request(`/articles/${articleId}/similar?limit=${limit}`);
     },
+
+    async getSimilarArticles(articleId, limit = 5, offset = 0) {
+        return this.request(`/articles/${articleId}/similar?limit=${limit}&offset=${offset}`);
+    }
 };

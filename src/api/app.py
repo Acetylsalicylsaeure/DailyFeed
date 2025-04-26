@@ -251,11 +251,15 @@ def get_similar_articles(article_id):
     """Get articles similar to the specified article."""
     rss = get_rss_backend()
     
-    # Get limit from query parameter
+    # Get limit and offset from query parameters
     limit = int(request.args.get('limit', 5))
+    offset = int(request.args.get('offset', 0))
     
-    # Get similar articles
-    similar_articles_ids = rss.find_similar_articles(article_id, limit)
+    # Get similar articles with pagination support
+    similar_articles_ids = rss.find_similar_articles(article_id, limit + offset)
+    
+    # Apply the offset and limit
+    similar_articles_ids = similar_articles_ids[offset:offset + limit]
     
     if not similar_articles_ids:
         return jsonify([])

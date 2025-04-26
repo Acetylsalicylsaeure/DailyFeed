@@ -21,6 +21,9 @@ const FeedManager = {
     feedFilterSelect: null,
     unreadFilterCheckbox: null,
     autoReadSetting: null,
+
+    similarArticleOffsets: {}, // Track offsets for each article's similar articles
+    similarBatchSize: 3,      // Number of similar articles to load per batch
     
     /**
      * Initialize the feed manager
@@ -704,5 +707,122 @@ const FeedManager = {
         `;
         
         container.appendChild(similarArticle);
+    },
+
+    async toggleSimilarArticles(articleId, button) {
+        const articleElement = button.closest('.article-card');
+        const similarContainer = articleElement.querySelector('.similar-articles-container');
+        const similarList = similarContainer.querySelector('.similar-articles-list');
+        
+        // Toggle container visibility
+        if (similarContainer.classList.contains('hidden')) {
+            // Show container and load articles
+            similarContainer.classList.remove('hidden');
+            button.classList.add('active');
+            
+            // Show loading indicator
+            similarList.innerHTML = `
+                <div class="loading-indicator">
+                    <div class="spinner"></div>
+                    <p>Loading similar articles...</p>
+                </div>
+            `;
+            
+            // Reset offset for this article when opening
+            this.similarArticleOffsets[articleId] = 0;
+            
+            try {
+                // Fetch similar articles
+                await this.loadMoreSimilarArticles(articleId, similarList);
+            } catch (error) {
+                console.error('Error loading similar articles:', error);
+                similarList.innerHTML = `
+                    <div class="error-message">
+                        <p>Failed to load similar articles. Please try again.</p>
+                    </div>
+                `;
+            }
+        } else {
+            // Hide container
+            similarContainer.classList.add('hidden');
+            button.classList.remove('active');
+        }
+    },
+
+    async loadMoreSimilarArticles(articleId, containerElement) {
+        // Get current offset for this article
+        const offset = this.similarArticleOffsets[articleId] || 0;
+        
+        try {
+            // Fetch similar articles with limit and offset
+            const similarArticles = await API.getSimilarArticles(articleId, this.similarBatchSize);
+            
+            // Remove loading indicator if it's the first batch
+            if (offset === 0) {
+                containerElement.innerHTML = '';
+            } else {
+                // Remove the "load more" button if it exists
+                const loadMoreButton = containerElement.querySelector('.load-more-similar-button');
+                if (loadMoreButton) {
+                    loadMoreButton.remove();
+                }
+            }
+            
+            if (similarArticles.length === 0 && offset === 0) {
+                containerElement.innerHTML = `
+                    <div class="empty-message">
+                        <p>No similar articles found.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Render each similar article
+            similarArticles.forEach(article => {
+                this.renderSimilarArticle(containerElement, article);
+            });
+            
+            // Update the offset for next batch
+            this.similarArticleOffsets[articleId] = offset + similarArticles.length;
+            
+            // Add "Load More" button if we received the full batch size (indicating there might be more)
+            if (similarArticles.length >= this.similarBatchSize) {
+                const loadMoreButton = document.createElement('button');
+                loadMoreButton.className = 'load-more-similar-button';
+                loadMoreButton.textContent = 'More Similar Articles';
+                
+                // Add click handler
+                loadMoreButton.addEventListener('click', async () => {
+                    // Replace button with loading indicator
+                    loadMoreButton.innerHTML = '<div class="spinner small-spinner"></div> Loading...';
+                    loadMoreButton.disabled = true;
+                    
+                    // Load more articles
+                    await this.loadMoreSimilarArticles(articleId, containerElement);
+                });
+                
+                containerElement.appendChild(loadMoreButton);
+            }
+        } catch (error) {
+            console.error('Error loading more similar articles:', error);
+            
+            // Show error only if it's the first batch
+            if (offset === 0) {
+                containerElement.innerHTML = `
+                    <div class="error-message">
+                        <p>Failed to load similar articles. Please try again.</p>
+                    </div>
+                `;
+            } else {
+                // Add error message at bottom
+                const errorMessage = document.createElement('div');
+                errorMessage.className = 'error-message';
+                errorMessage.textContent = 'Failed to load more articles.';
+                containerElement.appendChild(errorMessage);
+                
+                // Remove message after 3 seconds
+                setTimeout(() => errorMessage.remove(), 3000);
+            }
+        }
     }
 };

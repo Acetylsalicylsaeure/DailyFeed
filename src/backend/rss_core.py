@@ -1831,15 +1831,12 @@ class RSSBackend:
                 if not source_info:
                     return []
                     
-                source_feed_id = source_info['feed_id']
-                
-                # Get all articles with embeddings
+                # CHANGE: Get articles from all feeds, not just the same feed
                 cursor.execute('''
                     SELECT id, embedding FROM articles 
                     WHERE embedding IS NOT NULL 
-                    AND id != ? 
-                    AND feed_id = ?
-                ''', (article_id, source_feed_id))
+                    AND id != ?
+                ''', (article_id,))
                 
                 articles = cursor.fetchall()
                 
@@ -1869,6 +1866,7 @@ class RSSBackend:
         except Exception as e:
             logger.error(f"Error finding similar articles: {str(e)}")
             return []
+
 
     def get_article_by_id(self, article_id):
         """Get a single article by ID."""
