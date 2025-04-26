@@ -495,6 +495,7 @@ class RSSBackend:
                 user_id TEXT,  -- Optional user identifier
                 feedback INTEGER NOT NULL, -- 1 for positive, -1 for negative
                 clicked BOOLEAN DEFAULT 0, -- Track if the article link was clicked
+                test BOOLEAN DEFAULT 0,    -- Whether this feedback is part of the test set
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE CASCADE
             )
@@ -523,6 +524,7 @@ class RSSBackend:
                 ('auto_read', 'true', 'Automatically mark articles as read when scrolled past'),
                 ('store_raw_data', 'false', 'Store raw entry data for debugging'),
                 ('embedding_batch_size', '32', 'Number of articles to process at once for embeddings'),
+                ('test_set_ratio', '0.1', 'Ratio of user feedback to reserve for testing (0.0-1.0)'),
             ]
             
             for key, value, description in default_settings:
@@ -541,12 +543,16 @@ class RSSBackend:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_article_categories_category_id ON article_categories (category_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_article_id ON user_feedback (article_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_article_clicked ON user_feedback (article_id, clicked)')
+
+            # Handle schema migrations for existing databases
+            self._handle_schema_migrations(conn)    
+
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_test ON user_feedback (test)')
             
             conn.commit()
             
-            # Handle schema migrations for existing databases
-            self._handle_schema_migrations(conn)
-    
+
+
     def _handle_schema_migrations(self, conn):
         """
         Handle schema migrations for existing databases.
@@ -575,6 +581,29 @@ class RSSBackend:
                 # Column doesn't exist, add it
                 cursor.execute(f'ALTER TABLE articles ADD COLUMN {column} {type_def}')
                 logging.info(f"Added {column} column to articles table")
+        
+        # Check if we need to add the test column to user_feedback table
+        try:
+            cursor.execute('SELECT test FROM user_feedback LIMIT 1')
+        except sqlite3.OperationalError:
+            # Column doesn't exist, add it
+            cursor.execute('ALTER TABLE user_feedback ADD COLUMN test BOOLEAN DEFAULT 0')
+            logging.info("Added test column to user_feedback table")
+            # Add an index on the test column
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_feedback_test ON user_feedback (test)')
+            logging.info("Added index on test column in user_feedback table")
+        
+        # Check if test_set_ratio setting exists
+        cursor.execute('SELECT 1 FROM settings WHERE key = "test_set_ratio" LIMIT 1')
+        if not cursor.fetchone():
+            cursor.execute('''
+                INSERT INTO settings (key, value, description)
+                VALUES (?, ?, ?)
+            ''', ('test_set_ratio', '0.1', 'Ratio of user feedback to reserve for testing (0.0-1.0)'))
+            logging.info("Added test_set_ratio setting")
+        
+        # Rest of the migration code remains unchanged
+        # [Original migration code continues...]
         
         # Check if authors and article_authors tables exist
         try:
@@ -693,13 +722,14 @@ class RSSBackend:
                     user_id TEXT,
                     feedback INTEGER NOT NULL,
                     clicked BOOLEAN DEFAULT 0,
+                    test BOOLEAN DEFAULT 0,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (article_id) REFERENCES articles (id) ON DELETE CASCADE
                 )
                 ''')
                 
                 # Copy data to new table
-                cursor.execute('INSERT INTO user_feedback_new SELECT id, article_id, NULL, feedback, clicked, timestamp FROM user_feedback')
+                cursor.execute('INSERT INTO user_feedback_new SELECT id, article_id, user_id, feedback, clicked, 0, timestamp FROM user_feedback')
                 
                 # Drop old table and rename new one
                 cursor.execute('DROP TABLE user_feedback')
@@ -708,6 +738,7 @@ class RSSBackend:
                 # Recreate indices
                 cursor.execute('CREATE INDEX idx_user_feedback_article_id ON user_feedback (article_id)')
                 cursor.execute('CREATE INDEX idx_user_feedback_article_clicked ON user_feedback (article_id, clicked)')
+                cursor.execute('CREATE INDEX idx_user_feedback_test ON user_feedback (test)')
         except:
             # If there was an error, we'll assume this is a new database or the table doesn't exist yet
             pass
@@ -720,6 +751,7 @@ class RSSBackend:
             logging.info(f"Added embedding column to articles table")
         
         conn.commit()
+
 
     def add_feed(self, url: str) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """
@@ -1484,16 +1516,23 @@ class RSSBackend:
                 if cursor.fetchone() is None:
                     logger.warning(f"Attempted to record feedback for non-existent article ID: {article_id}")
                     return False
+                
+                # Get the test set ratio from settings (default to 0.1 if not set)
+                test_set_ratio = self.get_float_setting('test_set_ratio', 0.1)
+                
+                # Randomly assign to test set based on the ratio
+                import random
+                is_test = random.random() < test_set_ratio
                     
                 cursor.execute(
-                    'INSERT INTO user_feedback (article_id, feedback, user_id) VALUES (?, ?, ?)',
-                    (article_id, 1 if positive else -1, user_id)
+                    'INSERT INTO user_feedback (article_id, feedback, user_id, test) VALUES (?, ?, ?, ?)',
+                    (article_id, 1 if positive else -1, user_id, 1 if is_test else 0)
                 )
                 conn.commit()
                 return True
         except Exception as e:
             logger.error(f"Error recording feedback for article {article_id}: {str(e)}")
-            return False    
+            return False 
 
     def remove_feed(self, feed_id: int, delete_articles: bool = True) -> bool:
         """Remove a feed and optionally its articles."""
@@ -1594,28 +1633,35 @@ class RSSBackend:
                 # Check if there's already a feedback record for this article and user
                 if user_id:
                     cursor.execute(
-                        'SELECT id FROM user_feedback WHERE article_id = ? AND user_id = ? LIMIT 1',
+                        'SELECT id, test FROM user_feedback WHERE article_id = ? AND user_id = ? LIMIT 1',
                         (article_id, user_id)
                     )
                 else:
                     cursor.execute(
-                        'SELECT id FROM user_feedback WHERE article_id = ? LIMIT 1',
+                        'SELECT id, test FROM user_feedback WHERE article_id = ? LIMIT 1',
                         (article_id,)
                     )
                 
                 existing = cursor.fetchone()
                 
                 if existing:
-                    # Update existing record
+                    # Update existing record, preserving its test status
                     cursor.execute(
                         'UPDATE user_feedback SET clicked = 1, timestamp = CURRENT_TIMESTAMP WHERE id = ?',
-                        (existing[0],)
+                        (existing['id'],)
                     )
                 else:
+                    # Get the test set ratio from settings (default to 0.1 if not set)
+                    test_set_ratio = self.get_float_setting('test_set_ratio', 0.1)
+                    
+                    # Randomly assign to test set based on the ratio
+                    import random
+                    is_test = random.random() < test_set_ratio
+                    
                     # Insert new record
                     cursor.execute(
-                        'INSERT INTO user_feedback (article_id, feedback, clicked, user_id) VALUES (?, 0, 1, ?)',
-                        (article_id, user_id)
+                        'INSERT INTO user_feedback (article_id, feedback, clicked, user_id, test) VALUES (?, 0, 1, ?, ?)',
+                        (article_id, user_id, 1 if is_test else 0)
                     )
                 
                 conn.commit()
@@ -1624,11 +1670,23 @@ class RSSBackend:
             logger.error(f"Error recording click for article {article_id}: {str(e)}")
             return False
 
-    def get_article_interactions(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Get articles with their interaction statistics for AI training."""
+
+    def get_article_interactions(self, limit: int = 100, exclude_test: bool = True) -> List[Dict[str, Any]]:
+        """
+        Get articles with their interaction statistics for AI training.
+        
+        Args:
+            limit: Maximum number of articles to return
+            exclude_test: Whether to exclude interactions marked as test data
+            
+        Returns:
+            List of article interaction data
+        """
         with closing(self.get_db_connection()) as conn:
             cursor = conn.cursor()
-            cursor.execute('''
+            
+            # Build the query with optional test set exclusion
+            query = '''
                 SELECT 
                     a.id, a.title, a.description, a.published_at,
                     a.read,
@@ -1639,16 +1697,63 @@ class RSSBackend:
                     articles a
                 LEFT JOIN 
                     user_feedback uf ON a.id = uf.article_id
+            '''
+            
+            # Add test set filter if requested
+            if exclude_test:
+                query += ' AND (uf.test = 0 OR uf.test IS NULL)'
+                
+            query += '''
                 GROUP BY 
                     a.id
                 ORDER BY 
                     a.published_at DESC
                 LIMIT ?
-            ''', (limit,))
+            '''
+            
+            cursor.execute(query, (limit,))
+            
+            interactions = [dict(row) for row in cursor.fetchall()]
+            return interactions    
+
+    def get_test_interactions(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Get articles with their test set interaction statistics for AI model evaluation.
+        
+        Args:
+            limit: Maximum number of articles to return
+            
+        Returns:
+            List of article interaction data from the test set
+        """
+        with closing(self.get_db_connection()) as conn:
+            cursor = conn.cursor()
+            
+            query = '''
+                SELECT 
+                    a.id, a.title, a.description, a.published_at,
+                    a.read,
+                    COUNT(DISTINCT CASE WHEN uf.feedback = 1 THEN uf.id END) AS positive_count,
+                    COUNT(DISTINCT CASE WHEN uf.feedback = -1 THEN uf.id END) AS negative_count,
+                    COUNT(DISTINCT CASE WHEN uf.clicked = 1 THEN uf.id END) AS click_count
+                FROM 
+                    articles a
+                JOIN 
+                    user_feedback uf ON a.id = uf.article_id
+                WHERE
+                    uf.test = 1
+                GROUP BY 
+                    a.id
+                ORDER BY 
+                    a.published_at DESC
+                LIMIT ?
+            '''
+            
+            cursor.execute(query, (limit,))
             
             interactions = [dict(row) for row in cursor.fetchall()]
             return interactions
-    
+
     def get_author_interactions(self, author_id: int) -> Dict[str, Any]:
         """
         Get interaction statistics for articles by a specific author.
