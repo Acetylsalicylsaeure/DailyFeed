@@ -914,6 +914,19 @@ class RSSBackend:
         Returns the number of new articles.
         """
         try:
+            # Check if AI is enabled first
+            ai_enabled = self.get_bool_setting('ai_enabled', False)
+            
+            # Load the embedding service only if AI is enabled
+            embedding_service = None
+            if ai_enabled:
+                try:
+                    from src.backend.embedding_service import EmbeddingService
+                    embedding_service = EmbeddingService()
+                    logger.info("Embedding service initialized for new articles")
+                except ImportError:
+                    logger.warning("Cannot import EmbeddingService, embeddings will not be generated")
+                    
             with closing(self.get_db_connection()) as conn:
                 cursor = conn.cursor()
                 cursor.execute('SELECT id FROM feeds WHERE url = ?', (feed_url,))
@@ -968,6 +981,10 @@ class RSSBackend:
             
             # Check if we should store raw data for debugging
             store_raw_data = self.get_bool_setting('store_raw_data', False)
+            
+            # Prepare to collect texts for batch embedding if needed
+            new_article_ids = []
+            article_texts = []
             
             for entry in feed_data.entries:
                 # Extract GUID or generate one
@@ -1068,7 +1085,8 @@ class RSSBackend:
                     'raw_data': raw_data,
                     'authors': authors,
                     'categories': categories
-                }                
+                }
+                
                 try:
                     with closing(self.get_db_connection()) as conn:
                         conn.execute('BEGIN TRANSACTION')
@@ -1113,6 +1131,21 @@ class RSSBackend:
                         
                         conn.commit()
                         new_article_count += 1
+                        
+                        # If AI is enabled, prepare to generate embedding
+                        if ai_enabled and embedding_service:
+                            # Concatenate title with content for embedding
+                            text = article['title']
+                            if article['description']:
+                                text += " " + article['description']
+                            elif article['content']:
+                                # Extract plain text from content (stripping HTML)
+                                content_text = embedding_service.extract_plain_text(article['content'])
+                                text += " " + content_text[:1000]  # Limit content length
+                            
+                            article_texts.append(text)
+                            new_article_ids.append(article_id)
+                    
                 except sqlite3.IntegrityError:
                     # Article already exists, check if we need to update the image_url
                     with closing(self.get_db_connection()) as conn:
@@ -1155,10 +1188,46 @@ class RSSBackend:
                                     (article_id, category_id)
                                 )
                             
+                            # Check if this article needs an embedding
+                            if ai_enabled and embedding_service:
+                                cursor.execute('SELECT embedding FROM articles WHERE id = ?', (article_id,))
+                                result = cursor.fetchone()
+                                if not result['embedding']:
+                                    # Concatenate title with content for embedding
+                                    text = article['title']
+                                    if article['description']:
+                                        text += " " + article['description']
+                                    elif article['content']:
+                                        content_text = embedding_service.extract_plain_text(article['content'])
+                                        text += " " + content_text[:1000]
+                                    
+                                    article_texts.append(text)
+                                    new_article_ids.append(article_id)
+                            
                             conn.commit()
                 except Exception as e:
                     logger.error(f"Error inserting article {title}: {str(e)}")
-                
+            
+            # Generate embeddings for new articles in a batch if needed
+            if ai_enabled and embedding_service and article_texts:
+                try:
+                    logger.info(f"Generating embeddings for {len(article_texts)} new articles from {feed_url}")
+                    embeddings = embedding_service.generate_embeddings(article_texts)
+                    
+                    # Store embeddings in the database
+                    with closing(self.get_db_connection()) as conn:
+                        cursor = conn.cursor()
+                        for i, article_id in enumerate(new_article_ids):
+                            embedding_bytes = embeddings[i].tobytes()
+                            cursor.execute(
+                                'UPDATE articles SET embedding = ? WHERE id = ?',
+                                (embedding_bytes, article_id)
+                            )
+                        conn.commit()
+                    logger.info(f"Successfully stored embeddings for {len(article_texts)} articles")
+                except Exception as e:
+                    logger.error(f"Error generating embeddings: {str(e)}")
+            
             logger.info(f"Added {new_article_count} new articles from {feed_url}")
             return new_article_count
             
