@@ -646,26 +646,12 @@ const FeedManager = {
                 </div>
             `;
             
+            // Reset offset for this article when opening
+            this.similarArticleOffsets[articleId] = 0;
+            
             try {
                 // Fetch similar articles
-                const similarArticles = await API.getSimilarArticles(articleId, 3);
-                
-                // Clear loading indicator
-                similarList.innerHTML = '';
-                
-                if (similarArticles.length === 0) {
-                    similarList.innerHTML = `
-                        <div class="empty-message">
-                            <p>No similar articles found.</p>
-                        </div>
-                    `;
-                    return;
-                }
-                
-                // Render each similar article
-                similarArticles.forEach(article => {
-                    this.renderSimilarArticle(similarList, article);
-                });
+                await this.loadMoreSimilarArticles(articleId, similarList);
             } catch (error) {
                 console.error('Error loading similar articles:', error);
                 similarList.innerHTML = `
@@ -709,53 +695,18 @@ const FeedManager = {
         container.appendChild(similarArticle);
     },
 
-    async toggleSimilarArticles(articleId, button) {
-        const articleElement = button.closest('.article-card');
-        const similarContainer = articleElement.querySelector('.similar-articles-container');
-        const similarList = similarContainer.querySelector('.similar-articles-list');
-        
-        // Toggle container visibility
-        if (similarContainer.classList.contains('hidden')) {
-            // Show container and load articles
-            similarContainer.classList.remove('hidden');
-            button.classList.add('active');
-            
-            // Show loading indicator
-            similarList.innerHTML = `
-                <div class="loading-indicator">
-                    <div class="spinner"></div>
-                    <p>Loading similar articles...</p>
-                </div>
-            `;
-            
-            // Reset offset for this article when opening
-            this.similarArticleOffsets[articleId] = 0;
-            
-            try {
-                // Fetch similar articles
-                await this.loadMoreSimilarArticles(articleId, similarList);
-            } catch (error) {
-                console.error('Error loading similar articles:', error);
-                similarList.innerHTML = `
-                    <div class="error-message">
-                        <p>Failed to load similar articles. Please try again.</p>
-                    </div>
-                `;
-            }
-        } else {
-            // Hide container
-            similarContainer.classList.add('hidden');
-            button.classList.remove('active');
-        }
-    },
-
+    /**
+     * Load more similar articles
+     * @param {number} articleId - Article ID
+     * @param {Element} containerElement - Container to add articles to
+     */
     async loadMoreSimilarArticles(articleId, containerElement) {
         // Get current offset for this article
         const offset = this.similarArticleOffsets[articleId] || 0;
         
         try {
             // Fetch similar articles with limit and offset
-            const similarArticles = await API.getSimilarArticles(articleId, this.similarBatchSize);
+            const similarArticles = await API.getSimilarArticles(articleId, this.similarBatchSize, offset);
             
             // Remove loading indicator if it's the first batch
             if (offset === 0) {
