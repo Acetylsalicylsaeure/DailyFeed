@@ -1,4 +1,4 @@
-    /**
+/**
  * Feed manager handles displaying and interacting with articles
  */
 const FeedManager = {
@@ -388,6 +388,15 @@ const FeedManager = {
             this.toggleArticleReadStatus(article.id);
         });
         
+        // Similar articles button
+        const similarButton = articleElement.querySelector('.similar-button');
+        if (similarButton) {
+            similarButton.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.toggleSimilarArticles(article.id, similarButton);
+            });
+        }
+        
         // Like button
         const likeButton = articleElement.querySelector('.feedback-button.like');
         likeButton.addEventListener('click', (e) => {
@@ -608,5 +617,92 @@ const FeedManager = {
             <p>No articles found. Try changing your filters or add more feeds in Settings.</p>
         `;
         this.articlesContainer.appendChild(noArticlesElement);
+    },
+    
+    /**
+     * Toggle display of similar articles
+     * @param {number} articleId - Article ID
+     * @param {Element} button - Button element that was clicked
+     */
+    async toggleSimilarArticles(articleId, button) {
+        const articleElement = button.closest('.article-card');
+        const similarContainer = articleElement.querySelector('.similar-articles-container');
+        const similarList = similarContainer.querySelector('.similar-articles-list');
+        
+        // Toggle container visibility
+        if (similarContainer.classList.contains('hidden')) {
+            // Show container and load articles
+            similarContainer.classList.remove('hidden');
+            button.classList.add('active');
+            
+            // Show loading indicator
+            similarList.innerHTML = `
+                <div class="loading-indicator">
+                    <div class="spinner"></div>
+                    <p>Loading similar articles...</p>
+                </div>
+            `;
+            
+            try {
+                // Fetch similar articles
+                const similarArticles = await API.getSimilarArticles(articleId, 3);
+                
+                // Clear loading indicator
+                similarList.innerHTML = '';
+                
+                if (similarArticles.length === 0) {
+                    similarList.innerHTML = `
+                        <div class="empty-message">
+                            <p>No similar articles found.</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                // Render each similar article
+                similarArticles.forEach(article => {
+                    this.renderSimilarArticle(similarList, article);
+                });
+            } catch (error) {
+                console.error('Error loading similar articles:', error);
+                similarList.innerHTML = `
+                    <div class="error-message">
+                        <p>Failed to load similar articles. Please try again.</p>
+                    </div>
+                `;
+            }
+        } else {
+            // Hide container
+            similarContainer.classList.add('hidden');
+            button.classList.remove('active');
+        }
+    },
+
+    /**
+     * Render a similar article card
+     * @param {Element} container - Container element
+     * @param {Object} article - Article data
+     */
+    renderSimilarArticle(container, article) {
+        const similarArticle = document.createElement('div');
+        similarArticle.className = 'similar-article-card';
+        
+        // Add similarity score indicator
+        const similarityPercent = Math.round(article.similarity * 100);
+        
+        similarArticle.innerHTML = `
+            <div class="similar-article-header">
+                <h4 class="similar-article-title">
+                    <a href="${article.url}" target="_blank" rel="noopener noreferrer">${article.title}</a>
+                </h4>
+                <span class="similarity-score">${similarityPercent}% match</span>
+            </div>
+            <div class="similar-article-meta">
+                <span class="similar-article-feed">${article.feed_title}</span>
+                <span class="similar-article-date">${this.formatDate(new Date(article.published_at * 1000))}</span>
+            </div>
+        `;
+        
+        container.appendChild(similarArticle);
     }
 };
