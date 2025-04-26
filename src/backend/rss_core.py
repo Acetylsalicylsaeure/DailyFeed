@@ -235,7 +235,7 @@ def extract_image_url(entry) -> Optional[str]:
                     image_url = enclosure['url']
                     break
     
-    # Try to find image in content or group tags (like in the example)
+    # Try to find image in content or group tags
     if not image_url:
         # Check for group tag with content elements
         if hasattr(entry, 'group') and entry.group:
@@ -266,14 +266,48 @@ def extract_image_url(entry) -> Optional[str]:
     
     # Try parsing image from HTML content as a last resort
     if not image_url:
-        content = extract_content(entry)
+        # First check raw entry fields
+        raw_content = ""
+        if hasattr(entry, 'content_encoded'):
+            raw_content = entry.content_encoded
+        elif hasattr(entry, 'content') and isinstance(entry.content, list) and len(entry.content) > 0:
+            if isinstance(entry.content[0], dict) and 'value' in entry.content[0]:
+                raw_content = entry.content[0]['value']
+        elif hasattr(entry, 'description'):
+            raw_content = entry.description
+        
         # Simple regex to extract image URLs from HTML content
-        img_tags = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', content)
+        img_tags = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', raw_content)
         if img_tags:
             image_url = img_tags[0]  # Just take the first image
     
     return image_url
 
+
+def remove_first_image_from_html(html_content, image_url):
+    """
+    Remove the first image with the given URL from HTML content.
+    Returns the cleaned HTML content.
+    """
+    if not html_content or not image_url:
+        return html_content
+        
+    # Escape special characters in the URL for regex
+    escaped_url = re.escape(image_url)
+    
+    # Pattern to match img tag with the specific src
+    pattern = r'<img[^>]*src=["\']' + escaped_url + r'["\'][^>]*>'
+    
+    # Replace the first occurrence only
+    cleaned_html = re.sub(pattern, '', html_content, count=1)
+    
+    # Also try to remove the parent figure or div if it only contained this image
+    # This helps clean up more completely
+    for parent_tag in ['figure', 'div']:
+        parent_pattern = r'<' + parent_tag + r'[^>]*>\s*' + pattern + r'\s*</' + parent_tag + r'>'
+        cleaned_html = re.sub(parent_pattern, '', cleaned_html, count=1)
+    
+    return cleaned_html
 
 def extract_doi(entry) -> Optional[str]:
     """
@@ -952,7 +986,34 @@ class RSSBackend:
                 # Extract link with fallback
                 link = entry.get('link', '')
                 
-                # Extract content with rich fallback mechanism
+                # Extract image URL first, before processing content/summary
+                image_url = extract_image_url(entry)
+                
+                # Process raw content fields to remove the extracted image if found
+                # This happens before extracting the clean content and summary
+                if image_url:
+                    # Clean up image from content_encoded
+                    if hasattr(entry, 'content_encoded'):
+                        if re.search(r'<img[^>]*src=["\']' + re.escape(image_url) + r'["\']', entry.content_encoded):
+                            entry.content_encoded = remove_first_image_from_html(entry.content_encoded, image_url)
+                    
+                    # Clean up image from content list
+                    if hasattr(entry, 'content') and isinstance(entry.content, list) and len(entry.content) > 0:
+                        if isinstance(entry.content[0], dict) and 'value' in entry.content[0]:
+                            if re.search(r'<img[^>]*src=["\']' + re.escape(image_url) + r'["\']', entry.content[0]['value']):
+                                entry.content[0]['value'] = remove_first_image_from_html(entry.content[0]['value'], image_url)
+                    
+                    # Clean up image from description
+                    if hasattr(entry, 'description'):
+                        if re.search(r'<img[^>]*src=["\']' + re.escape(image_url) + r'["\']', entry.description):
+                            entry.description = remove_first_image_from_html(entry.description, image_url)
+                    
+                    # Clean up image from summary
+                    if hasattr(entry, 'summary'):
+                        if re.search(r'<img[^>]*src=["\']' + re.escape(image_url) + r'["\']', entry.summary):
+                            entry.summary = remove_first_image_from_html(entry.summary, image_url)
+                
+                # Extract content with rich fallback mechanism (now with image already removed)
                 content = extract_content(entry)
                 content = clean_html(content)
                 
@@ -969,9 +1030,6 @@ class RSSBackend:
                 
                 # Extract categories
                 categories = extract_categories(entry)
-                
-                # Extract image URL
-                image_url = extract_image_url(entry)
                 
                 # Extract DOI if available
                 doi = extract_doi(entry)
@@ -1010,8 +1068,7 @@ class RSSBackend:
                     'raw_data': raw_data,
                     'authors': authors,
                     'categories': categories
-                }
-                
+                }                
                 try:
                     with closing(self.get_db_connection()) as conn:
                         conn.execute('BEGIN TRANSACTION')
